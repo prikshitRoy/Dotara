@@ -9,7 +9,10 @@ A desktop media player built on the **VLC engine (libVLC)** and **Tauri 2**, wit
   - Defaults to `E:\Songs` if present and persists all added libraries in `%LOCALAPPDATA%\Dotara\libraries.json`
   - Scrollable list of all audio and video files in the active library
   - Automatic **audio & video thumbnails** (OS video frame / album art extraction via `IShellItemImageFactory`, sidecar `.jpg`/`.png`/`.webp` matching, embedded ID3/Vorbis/MP4 cover art scanning, and SVG fallback icons)
-  - Select any item and click **Play Selected** / the bottom **Play** button, or click the **▶** button right on the item row
+  - **Folder Playlist & Playback Modes:**
+    - **`▶ Play All`** button to play all songs inside the active folder from the beginning, and **`▶ Play Selected`** button (plus per-item checkboxes for multi-selection)
+    - Playback mode selector with 4 options (**`Continue play next song in the list`** as the default, **`Play all`**, **`Selected`**, and **`Play only one song`**)
+    - **`⏮` Previous** and **`⏭` Next** track buttons in the bottom control bar, plus automatic track advancement when a song finishes
 - Play / pause, stop, seek bar with elapsed / total time, and volume control
 - Native single-file picker (**Open File…**)
 - Video rendered by libVLC directly into a Win32 child surface inside the app window (automatically resizes when the side menu opens or closes)

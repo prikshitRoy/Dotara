@@ -3,9 +3,14 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Duration;
 
 const ALL_LIBRARIES_KEY: &str = "*";
+const MODE_CONTINUE_NEXT: &str = "continue_next";
+const MODE_PLAY_ALL: &str = "play_all";
+const MODE_SELECTED: &str = "selected";
+const MODE_ONE: &str = "one";
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,7 +46,7 @@ pub struct LibraryResponse {
     pub items: Vec<LibraryItem>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub state: String,
@@ -49,7 +54,22 @@ pub struct Status {
     pub length_ms: i64,
     pub volume: i32,
     pub has_video: bool,
+    pub play_mode: String,
     pub media: Option<MediaInfo>,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            state: String::new(),
+            time_ms: 0,
+            length_ms: 0,
+            volume: 80,
+            has_video: false,
+            play_mode: MODE_CONTINUE_NEXT.to_string(),
+            media: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -71,8 +91,21 @@ struct VolumeArgs {
 }
 
 #[derive(Serialize)]
-struct PathArgs {
+#[serde(rename_all = "camelCase")]
+struct PlayFileArgs {
     path: String,
+    selected_paths: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaySelectedArgs {
+    selected_paths: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ModeArgs {
+    mode: String,
 }
 
 #[derive(Serialize)]
@@ -123,16 +156,39 @@ pub fn App() -> impl IntoView {
     let (menu_open, set_menu_open) = signal(true);
     let (library, set_library) = signal(LibraryResponse::default());
     let (selected_path, set_selected_path) = signal(None::<String>);
+    // Optional multi-selection set (checkboxes) for "Selected" playback mode.
+    let (checked_paths, set_checked_paths) = signal(HashSet::<String>::new());
 
     let video_ref = NodeRef::<leptos::html::Div>::new();
 
     let apply_library = move |lib: LibraryResponse| {
+        let valid_paths: HashSet<String> = lib.items.iter().map(|i| i.path.clone()).collect();
+        set_checked_paths.update(|set| set.retain(|p| valid_paths.contains(p)));
         let keep_current = selected_path
             .get_untracked()
-            .filter(|sel| lib.items.iter().any(|i| &i.path == sel));
+            .filter(|sel| valid_paths.contains(sel));
         let next_sel = keep_current.or_else(|| lib.items.first().map(|i| i.path.clone()));
         set_selected_path.set(next_sel);
         set_library.set(lib);
+    };
+
+    // Ordered list of checked paths (following folder order), or the single `selected_path`.
+    let resolve_selected_list = move || -> Vec<String> {
+        let checked = checked_paths.get_untracked();
+        if !checked.is_empty() {
+            let ordered: Vec<String> = library
+                .with_untracked(|l| {
+                    l.items
+                        .iter()
+                        .filter(|i| checked.contains(&i.path))
+                        .map(|i| i.path.clone())
+                        .collect()
+                });
+            if !ordered.is_empty() {
+                return ordered;
+            }
+        }
+        selected_path.get_untracked().into_iter().collect()
     };
 
     // --- status polling -----------------------------------------------------
@@ -197,6 +253,7 @@ pub fn App() -> impl IntoView {
 
     let play_item = move |path: String| {
         set_selected_path.set(Some(path.clone()));
+        let sel_list = resolve_selected_list();
         spawn_local(async move {
             let current_playing_path = status.with_untracked(|s| {
                 if s.state == "playing" || s.state == "paused" {
@@ -211,10 +268,90 @@ pub fn App() -> impl IntoView {
                     Err(e) => set_error.set(Some(e)),
                 }
             } else {
-                match invoke::<_, MediaInfo>("play_file", &PathArgs { path }).await {
+                let args = PlayFileArgs {
+                    path,
+                    selected_paths: Some(sel_list),
+                };
+                match invoke::<_, MediaInfo>("play_file", &args).await {
                     Ok(_) => set_error.set(None),
                     Err(e) => set_error.set(Some(e)),
                 }
+            }
+            refresh();
+        });
+    };
+
+    let start_play_all = move |_| {
+        spawn_local(async move {
+            match invoke::<_, Option<MediaInfo>>("play_all", &NoArgs {}).await {
+                Ok(Some(info)) => {
+                    set_selected_path.set(Some(info.path));
+                    set_error.set(None);
+                }
+                Ok(None) => {}
+                Err(e) => set_error.set(Some(e)),
+            }
+            refresh();
+        });
+    };
+
+    let start_play_selected = move |_| {
+        let selected_paths = resolve_selected_list();
+        if selected_paths.is_empty() {
+            return;
+        }
+        spawn_local(async move {
+            match invoke::<_, Option<MediaInfo>>(
+                "play_selected",
+                &PlaySelectedArgs { selected_paths },
+            )
+            .await
+            {
+                Ok(Some(info)) => {
+                    set_selected_path.set(Some(info.path));
+                    set_error.set(None);
+                }
+                Ok(None) => {}
+                Err(e) => set_error.set(Some(e)),
+            }
+            refresh();
+        });
+    };
+
+    let change_play_mode = move |mode: String| {
+        set_status.update(|s| s.play_mode = mode.clone());
+        spawn_local(async move {
+            match invoke_unit("set_play_mode", &ModeArgs { mode }).await {
+                Ok(()) => set_error.set(None),
+                Err(e) => set_error.set(Some(e)),
+            }
+            refresh();
+        });
+    };
+
+    let skip_next = move |_| {
+        spawn_local(async move {
+            match invoke::<_, Option<MediaInfo>>("next_track", &NoArgs {}).await {
+                Ok(Some(info)) => {
+                    set_selected_path.set(Some(info.path));
+                    set_error.set(None);
+                }
+                Ok(None) => {}
+                Err(e) => set_error.set(Some(e)),
+            }
+            refresh();
+        });
+    };
+
+    let skip_prev = move |_| {
+        spawn_local(async move {
+            match invoke::<_, Option<MediaInfo>>("prev_track", &NoArgs {}).await {
+                Ok(Some(info)) => {
+                    set_selected_path.set(Some(info.path));
+                    set_error.set(None);
+                }
+                Ok(None) => {}
+                Err(e) => set_error.set(Some(e)),
             }
             refresh();
         });
@@ -302,6 +439,7 @@ pub fn App() -> impl IntoView {
     let has_media_or_selection =
         move || status.with(|s| s.media.is_some()) || selected_path.with(|p| p.is_some());
     let has_loaded_media = move || status.with(|s| s.media.is_some());
+    let has_library_items = move || library.with(|l| !l.items.is_empty());
     let is_playing = move || status.with(|s| s.state == "playing");
     let placeholder = Memo::new(move |_| status.with(placeholder_for));
     let position = move || scrub.get().unwrap_or_else(|| status.with(|s| s.time_ms));
@@ -384,17 +522,54 @@ pub fn App() -> impl IntoView {
                                 }
                             }}
 
-                            <Show when=move || selected_path.with(|s| s.is_some())>
-                                <button
-                                    class="play-selected-btn"
-                                    on:click=move |_| {
-                                        if let Some(p) = selected_path.get_untracked() {
-                                            play_item(p);
-                                        }
-                                    }
-                                >
-                                    "▶ Play Selected"
-                                </button>
+                            <Show when=has_library_items>
+                                <div class="play-controls-box">
+                                    <div class="play-actions-row">
+                                        <button
+                                            class="play-all-btn"
+                                            on:click=start_play_all
+                                            title="Play all songs inside this folder from the beginning"
+                                        >
+                                            "▶ Play All"
+                                        </button>
+                                        <button
+                                            class="play-selected-btn"
+                                            disabled=move || selected_path.with(|s| s.is_none()) && checked_paths.with(|c| c.is_empty())
+                                            on:click=start_play_selected
+                                            title="Play the selected song(s)"
+                                        >
+                                            {move || {
+                                                let count = checked_paths.with(|c| c.len());
+                                                if count > 0 {
+                                                    format!("▶ Play Selected ({count})")
+                                                } else {
+                                                    "▶ Play Selected".to_string()
+                                                }
+                                            }}
+                                        </button>
+                                    </div>
+                                    <div class="play-mode-row">
+                                        <label class="mode-label">"Mode:"</label>
+                                        <select
+                                            class="mode-select"
+                                            prop:value=move || status.with(|s| s.play_mode.clone())
+                                            on:change=move |ev| change_play_mode(event_target_value(&ev))
+                                        >
+                                            <option value=MODE_CONTINUE_NEXT selected=move || status.with(|s| s.play_mode == MODE_CONTINUE_NEXT)>
+                                                "Continue play next song in the list"
+                                            </option>
+                                            <option value=MODE_PLAY_ALL selected=move || status.with(|s| s.play_mode == MODE_PLAY_ALL)>
+                                                "Play all"
+                                            </option>
+                                            <option value=MODE_SELECTED selected=move || status.with(|s| s.play_mode == MODE_SELECTED)>
+                                                "Selected"
+                                            </option>
+                                            <option value=MODE_ONE selected=move || status.with(|s| s.play_mode == MODE_ONE)>
+                                                "Play only one song"
+                                            </option>
+                                        </select>
+                                    </div>
+                                </div>
                             </Show>
                         </div>
 
@@ -428,6 +603,8 @@ pub fn App() -> impl IntoView {
                                                 let item_path_btn = item.path.clone();
                                                 let item_path_active = item.path.clone();
                                                 let item_path_playing = item.path.clone();
+                                                let item_path_chk_read = item.path.clone();
+                                                let item_path_chk_toggle = item.path.clone();
                                                 let item_name = item.name.clone();
                                                 let item_alt = item.name.clone();
                                                 let item_title = item.name.clone();
@@ -442,6 +619,22 @@ pub fn App() -> impl IntoView {
                                                         on:click=move |_| set_selected_path.set(Some(item_path_click.clone()))
                                                         on:dblclick=move |_| play_item(item_path_dbl.clone())
                                                     >
+                                                        <input
+                                                            type="checkbox"
+                                                            class="item-check"
+                                                            title="Select for playlist"
+                                                            prop:checked=move || checked_paths.with(|c| c.contains(&item_path_chk_read))
+                                                            on:click=move |ev| ev.stop_propagation()
+                                                            on:change=move |_| {
+                                                                let p = item_path_chk_toggle.clone();
+                                                                set_selected_path.set(Some(p.clone()));
+                                                                set_checked_paths.update(|set| {
+                                                                    if !set.remove(&p) {
+                                                                        set.insert(p);
+                                                                    }
+                                                                });
+                                                            }
+                                                        />
                                                         <div class="thumb-wrap">
                                                             <img class="thumb" src=item.thumbnail alt=item_alt loading="lazy" />
                                                             <span class="kind-badge" class:video=is_video>
@@ -527,11 +720,25 @@ pub fn App() -> impl IntoView {
                     </button>
                     <button on:click=open>"Open File…"</button>
                     <button
+                        disabled=move || !has_library_items()
+                        on:click=skip_prev
+                        title="Previous track in list"
+                    >
+                        "⏮"
+                    </button>
+                    <button
                         class="primary"
                         disabled=move || !has_media_or_selection()
                         on:click=play_or_toggle
                     >
                         {move || if is_playing() { "⏸ Pause" } else { "▶ Play" }}
+                    </button>
+                    <button
+                        disabled=move || !has_library_items()
+                        on:click=skip_next
+                        title="Next track in list"
+                    >
+                        "⏭"
                     </button>
                     <button disabled=move || !has_loaded_media() on:click=move |_| run("stop")>
                         "⏹ Stop"

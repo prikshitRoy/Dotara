@@ -19,6 +19,11 @@ const MEDIA_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "wav", "ogg", "opus", "m4a", "aac", "wma", "alac", // audio
 ];
 
+pub const MODE_CONTINUE_NEXT: &str = "continue_next";
+pub const MODE_PLAY_ALL: &str = "play_all";
+pub const MODE_SELECTED: &str = "selected";
+pub const MODE_ONE: &str = "one";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct MediaInfo {
@@ -36,6 +41,7 @@ struct Status {
     length_ms: i64,
     volume: i32,
     has_video: bool,
+    play_mode: String,
     media: Option<MediaInfo>,
 }
 
@@ -43,6 +49,10 @@ struct Inner {
     media: Option<MediaInfo>,
     folders: Vec<PathBuf>,
     active_folder: Option<String>,
+    /// `"continue_next"` (default), `"play_all"`, `"selected"`, or `"one"`.
+    play_mode: String,
+    /// Ordered playback queue of file paths.
+    queue: Vec<String>,
     /// Volume the user asked for; applied once VLC has an audio output.
     volume: i32,
     surface_visible: bool,
@@ -75,6 +85,17 @@ impl AppState {
         };
         self.inner.lock().unwrap().media = Some(info.clone());
         Ok(info)
+    }
+
+    fn current_folder_paths(&self) -> Vec<String> {
+        let (folders, active_folder) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.folders.clone(), inner.active_folder.clone())
+        };
+        library::scan_libraries(&folders, active_folder.as_deref())
+            .into_iter()
+            .map(|i| i.path)
+            .collect()
     }
 
     fn library_response(&self) -> LibraryResponse {
@@ -187,16 +208,155 @@ async fn remove_folder(
     Ok(state.library_response())
 }
 
+/// Change the playback mode (`"continue_next"`, `"play_all"`, `"selected"`, `"one"`).
+#[tauri::command]
+async fn set_play_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    let valid = matches!(
+        mode.as_str(),
+        MODE_CONTINUE_NEXT | MODE_PLAY_ALL | MODE_SELECTED | MODE_ONE
+    );
+    if !valid {
+        return Err(format!("Invalid play mode: {mode}"));
+    }
+    state.inner.lock().unwrap().play_mode = mode;
+    Ok(())
+}
+
+/// Play all songs inside the active library folder starting from the first track.
+#[tauri::command]
+async fn play_all(state: State<'_, AppState>) -> Result<Option<MediaInfo>, String> {
+    let all_paths = state.current_folder_paths();
+    let Some(first) = all_paths.first().cloned() else {
+        return Ok(None);
+    };
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner.queue = all_paths;
+        // If mode was "one" or "selected", switch to "continue_next" so Play All plays the list.
+        if inner.play_mode == MODE_ONE || inner.play_mode == MODE_SELECTED {
+            inner.play_mode = MODE_CONTINUE_NEXT.to_string();
+        }
+    }
+    let info = state.load(Path::new(&first))?;
+    state.player()?.play()?;
+    Ok(Some(info))
+}
+
+/// Play the selected song(s) according to the active playback mode.
+#[tauri::command]
+async fn play_selected(
+    state: State<'_, AppState>,
+    selected_paths: Vec<String>,
+) -> Result<Option<MediaInfo>, String> {
+    let Some(first) = selected_paths.first().cloned() else {
+        return Ok(None);
+    };
+    let folder_paths = state.current_folder_paths();
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if selected_paths.len() > 1 || inner.play_mode == MODE_SELECTED {
+            inner.queue = selected_paths;
+        } else {
+            inner.queue = folder_paths;
+        }
+    }
+    let info = state.load(Path::new(&first))?;
+    state.player()?.play()?;
+    Ok(Some(info))
+}
+
 /// Load a file path from the library and immediately start playing it.
 #[tauri::command]
-async fn play_file(state: State<'_, AppState>, path: String) -> Result<MediaInfo, String> {
+async fn play_file(
+    state: State<'_, AppState>,
+    path: String,
+    selected_paths: Option<Vec<String>>,
+) -> Result<MediaInfo, String> {
     let p = PathBuf::from(&path);
     if !p.is_file() {
         return Err(format!("File not found: {path}"));
     }
+    let folder_paths = state.current_folder_paths();
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if inner.play_mode == MODE_SELECTED {
+            if let Some(sel) = selected_paths.filter(|s| !s.is_empty()) {
+                if sel.iter().any(|s| s == &path) {
+                    inner.queue = sel;
+                } else {
+                    inner.queue = vec![path.clone()];
+                }
+            } else {
+                inner.queue = vec![path.clone()];
+            }
+        } else if folder_paths.iter().any(|fp| fp == &path) {
+            inner.queue = folder_paths;
+        } else {
+            inner.queue = vec![path.clone()];
+        }
+    }
     let info = state.load(&p)?;
     state.player()?.play()?;
     Ok(info)
+}
+
+/// Advance to the next song in the current queue (or folder list).
+#[tauri::command]
+async fn next_track(state: State<'_, AppState>) -> Result<Option<MediaInfo>, String> {
+    let next = {
+        let mut inner = state.inner.lock().unwrap();
+        if inner.queue.is_empty() {
+            drop(inner);
+            let folder_paths = state.current_folder_paths();
+            inner = state.inner.lock().unwrap();
+            inner.queue = folder_paths;
+        }
+        let current = inner.media.as_ref().map(|m| m.path.as_str());
+        match current.and_then(|c| inner.queue.iter().position(|p| p == c)) {
+            Some(idx) if idx + 1 < inner.queue.len() => Some(inner.queue[idx + 1].clone()),
+            Some(_) if inner.play_mode == MODE_PLAY_ALL && !inner.queue.is_empty() => {
+                Some(inner.queue[0].clone())
+            }
+            None => inner.queue.first().cloned(),
+            _ => None,
+        }
+    };
+    if let Some(path) = next {
+        let info = state.load(Path::new(&path))?;
+        state.player()?.play()?;
+        Ok(Some(info))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Go back to the previous song in the current queue (or folder list).
+#[tauri::command]
+async fn prev_track(state: State<'_, AppState>) -> Result<Option<MediaInfo>, String> {
+    let prev = {
+        let mut inner = state.inner.lock().unwrap();
+        if inner.queue.is_empty() {
+            drop(inner);
+            let folder_paths = state.current_folder_paths();
+            inner = state.inner.lock().unwrap();
+            inner.queue = folder_paths;
+        }
+        let current = inner.media.as_ref().map(|m| m.path.as_str());
+        match current.and_then(|c| inner.queue.iter().position(|p| p == c)) {
+            Some(idx) if idx > 0 => Some(inner.queue[idx - 1].clone()),
+            Some(0) if inner.play_mode == MODE_PLAY_ALL && !inner.queue.is_empty() => {
+                inner.queue.last().cloned()
+            }
+            _ => None,
+        }
+    };
+    if let Some(path) = prev {
+        let info = state.load(Path::new(&path))?;
+        state.player()?.play()?;
+        Ok(Some(info))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Show a native file picker, load the chosen file and start playing it.
@@ -281,11 +441,44 @@ async fn set_video_bounds(
     Ok(())
 }
 
-/// Polled by the UI a few times per second.
+/// Polled by the UI a few times per second; also handles auto-advancing when a track ends.
 #[tauri::command]
 async fn status(state: State<'_, AppState>) -> Result<Status, String> {
     let player = state.player()?;
-    let st = player.state();
+    let mut st = player.state();
+
+    if st == vlc::State::Ended {
+        let next_to_play = {
+            let inner = state.inner.lock().unwrap();
+            let current = inner.media.as_ref().map(|m| m.path.as_str());
+            match inner.play_mode.as_str() {
+                MODE_ONE => None,
+                MODE_PLAY_ALL => {
+                    match current.and_then(|c| inner.queue.iter().position(|p| p == c)) {
+                        Some(idx) if idx + 1 < inner.queue.len() => {
+                            Some(inner.queue[idx + 1].clone())
+                        }
+                        Some(_) if !inner.queue.is_empty() => Some(inner.queue[0].clone()),
+                        _ => None,
+                    }
+                }
+                // MODE_CONTINUE_NEXT (default) and MODE_SELECTED advance to idx + 1 in queue
+                _ => match current.and_then(|c| inner.queue.iter().position(|p| p == c)) {
+                    Some(idx) if idx + 1 < inner.queue.len() => Some(inner.queue[idx + 1].clone()),
+                    _ => None,
+                },
+            }
+        };
+
+        if let Some(next_path) = next_to_play {
+            let p = PathBuf::from(&next_path);
+            if p.is_file() && state.load(&p).is_ok() {
+                let _ = player.play();
+                st = player.state();
+            }
+        }
+    }
+
     let has_video = player.has_video();
     let mut inner = state.inner.lock().unwrap();
 
@@ -310,6 +503,7 @@ async fn status(state: State<'_, AppState>) -> Result<Status, String> {
         length_ms: player.length().max(0),
         volume: inner.volume,
         has_video,
+        play_mode: inner.play_mode.clone(),
         media: inner.media.clone(),
     })
 }
@@ -341,6 +535,11 @@ fn main() {
             }
 
             let (folders, active_folder) = library::initial_libraries();
+            let initial_queue = library::scan_libraries(&folders, active_folder.as_deref())
+                .into_iter()
+                .map(|i| i.path)
+                .collect();
+
             app.manage(AppState {
                 player,
                 surface,
@@ -348,6 +547,8 @@ fn main() {
                     media: None,
                     folders,
                     active_folder,
+                    play_mode: MODE_CONTINUE_NEXT.to_string(),
+                    queue: initial_queue,
                     volume: 80,
                     surface_visible: false,
                 }),
@@ -359,7 +560,12 @@ fn main() {
             add_folder,
             select_folder,
             remove_folder,
+            set_play_mode,
+            play_all,
+            play_selected,
             play_file,
+            next_track,
+            prev_track,
             open_file,
             play,
             pause,
