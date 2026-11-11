@@ -1,0 +1,13 @@
+# Build output
+/target
+/dist
+/src-tauri/target
+/src-tauri/gen/schemas
+
+# Local test media
+*.webm
+*.mp4
+*.mkv
+*.mp3
+*.flac
+*.wav
