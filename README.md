@@ -52,12 +52,14 @@ flowchart LR
 - **Commands** — `open_file`, `load_default`, `play`, `pause`, `toggle_pause`, `stop`, `seek`, `set_volume`, `set_video_bounds`, `status`. The UI polls `status` every 250 ms for state, position, length and volume.
 - **UI** — `src/app.rs` (Leptos components) and `src/tauri.rs` (typed `invoke` wrapper over `window.__TAURI__.core.invoke`).
 
-### VLC lookup order
+### Self-contained VLC bundle
 
-1. `DOTARA_VLC_DIR` environment variable
-2. `vlc\` folder next to the executable (for bundling VLC with the app)
-3. The executable's own folder
-4. `%ProgramFiles%\VideoLAN\VLC`, `%ProgramFiles(x86)%\VideoLAN\VLC`
+[`scripts/prepare-vlc.ps1`](file:///e:/Software%20Projects/Music%20Player/Dotara/scripts/prepare-vlc.ps1) stages `libvlc.dll`, `libvlccore.dll`, and the playback `plugins/` (plus a freshly generated `plugins.dat` cache) into `src-tauri/vlc/`. `tauri.conf.json` bundles `src-tauri/vlc/` and `testvideo.webm` directly into the NSIS `.exe` installer so the installed app does not depend on an external VLC installation or search outside its own directory.
+
+Runtime lookup order:
+1. `<exe_dir>\vlc\` (installed & release builds)
+2. `<exe_dir>\`
+3. `src-tauri\vlc\` (development builds)
 
 ## Project layout
 

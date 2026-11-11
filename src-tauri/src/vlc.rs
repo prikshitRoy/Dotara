@@ -127,26 +127,15 @@ impl State {
     }
 }
 
-/// Locate the directory holding `libvlc.dll`.
-///
-/// Search order: `DOTARA_VLC_DIR` env var, a `vlc` folder next to the executable
-/// (for bundled builds), the executable folder itself, then standard VLC installs.
+/// Locate the bundled `vlc` directory holding `libvlc.dll` and `plugins/`.
 fn find_vlc_dir() -> Option<PathBuf> {
     let dll = libvlc_file_name();
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = std::env::var_os("DOTARA_VLC_DIR") {
-        candidates.push(dir.into());
-    }
     if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         candidates.push(exe_dir.join("vlc"));
         candidates.push(exe_dir);
     }
-    #[cfg(windows)]
-    for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
-        if let Some(pf) = std::env::var_os(var) {
-            candidates.push(PathBuf::from(pf).join("VideoLAN").join("VLC"));
-        }
-    }
+    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("vlc"));
     candidates.into_iter().find(|d| d.join(dll).is_file())
 }
 
@@ -174,11 +163,11 @@ unsafe impl Sync for Player {}
 impl Player {
     pub fn new() -> Result<Self, String> {
         let dir = find_vlc_dir().ok_or_else(|| {
-            "Could not find VLC. Install 64-bit VLC 3.x or set DOTARA_VLC_DIR to the folder containing libvlc.dll.".to_string()
+            "Bundled VLC runtime not found next to the executable (expected a `vlc` folder with libvlc.dll).".to_string()
         })?;
 
         let plugins = dir.join("plugins");
-        if plugins.is_dir() && std::env::var_os("VLC_PLUGIN_PATH").is_none() {
+        if plugins.is_dir() {
             std::env::set_var("VLC_PLUGIN_PATH", &plugins);
         }
 

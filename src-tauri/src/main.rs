@@ -67,10 +67,13 @@ impl AppState {
     }
 }
 
-/// Look for `testvideo.webm` in the usual development locations.
+/// Look for bundled `testvideo.webm` next to the executable (or in the workspace during dev).
 fn find_test_media() -> Option<PathBuf> {
     const NAME: &str = "testvideo.webm";
     let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        dirs.push(exe_dir);
+    }
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd.clone());
         if let Some(parent) = cwd.parent() {
