@@ -5,6 +5,8 @@ use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+const ALL_LIBRARIES_KEY: &str = "*";
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaInfo {
@@ -16,9 +18,17 @@ pub struct MediaInfo {
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LibraryFolder {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryItem {
     pub path: String,
     pub name: String,
+    pub folder: String,
     pub kind: String,
     pub thumbnail: String,
 }
@@ -26,7 +36,8 @@ pub struct LibraryItem {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryResponse {
-    pub folder: Option<String>,
+    pub folders: Vec<LibraryFolder>,
+    pub active_folder: Option<String>,
     pub items: Vec<LibraryItem>,
 }
 
@@ -62,6 +73,11 @@ struct VolumeArgs {
 #[derive(Serialize)]
 struct PathArgs {
     path: String,
+}
+
+#[derive(Serialize)]
+struct FolderArgs {
+    folder: String,
 }
 
 /// What to show in the video area when the native VLC surface is hidden.
@@ -110,6 +126,15 @@ pub fn App() -> impl IntoView {
 
     let video_ref = NodeRef::<leptos::html::Div>::new();
 
+    let apply_library = move |lib: LibraryResponse| {
+        let keep_current = selected_path
+            .get_untracked()
+            .filter(|sel| lib.items.iter().any(|i| &i.path == sel));
+        let next_sel = keep_current.or_else(|| lib.items.first().map(|i| i.path.clone()));
+        set_selected_path.set(next_sel);
+        set_library.set(lib);
+    };
+
     // --- status polling -----------------------------------------------------
     let refresh = move || {
         spawn_local(async move {
@@ -150,15 +175,10 @@ pub fn App() -> impl IntoView {
     let resize = window_event_listener(ev::resize, move |_| report_bounds());
     on_cleanup(move || resize.remove());
 
-    // Load initial library folder (defaults to E:\Songs if present).
+    // Load initial libraries (defaults to E:\Songs if present).
     spawn_local(async move {
         match invoke::<_, LibraryResponse>("get_library", &NoArgs {}).await {
-            Ok(lib) => {
-                if let Some(first) = lib.items.first() {
-                    set_selected_path.set(Some(first.path.clone()));
-                }
-                set_library.set(lib);
-            }
+            Ok(lib) => apply_library(lib),
             Err(e) => set_error.set(Some(e)),
         }
         refresh();
@@ -212,19 +232,38 @@ pub fn App() -> impl IntoView {
         run("toggle_pause");
     };
 
-    let choose_folder = move |_| {
+    let add_library = move |_| {
         spawn_local(async move {
-            match invoke::<_, Option<LibraryResponse>>("pick_folder", &NoArgs {}).await {
+            match invoke::<_, Option<LibraryResponse>>("add_folder", &NoArgs {}).await {
                 Ok(Some(lib)) => {
-                    if let Some(first) = lib.items.first() {
-                        set_selected_path.set(Some(first.path.clone()));
-                    } else {
-                        set_selected_path.set(None);
-                    }
-                    set_library.set(lib);
+                    apply_library(lib);
                     set_error.set(None);
                 }
                 Ok(None) => {}
+                Err(e) => set_error.set(Some(e)),
+            }
+        })
+    };
+
+    let switch_library = move |folder: String| {
+        spawn_local(async move {
+            match invoke::<_, LibraryResponse>("select_folder", &FolderArgs { folder }).await {
+                Ok(lib) => {
+                    apply_library(lib);
+                    set_error.set(None);
+                }
+                Err(e) => set_error.set(Some(e)),
+            }
+        })
+    };
+
+    let delete_library = move |folder: String| {
+        spawn_local(async move {
+            match invoke::<_, LibraryResponse>("remove_folder", &FolderArgs { folder }).await {
+                Ok(lib) => {
+                    apply_library(lib);
+                    set_error.set(None);
+                }
                 Err(e) => set_error.set(Some(e)),
             }
         })
@@ -275,23 +314,76 @@ pub fn App() -> impl IntoView {
                     <aside class="side-menu">
                         <div class="side-header">
                             <div class="side-title-row">
-                                <span class="side-title">"Media Library"</span>
+                                <span class="side-title">"Media Libraries"</span>
                                 <div class="side-header-actions">
-                                    <button class="small-btn" on:click=choose_folder>
-                                        {move || if library.with(|l| l.folder.is_some()) {
-                                            "Change Folder…"
-                                        } else {
-                                            "Select Folder…"
-                                        }}
+                                    <button class="small-btn" on:click=add_library>
+                                        "+ Add Library…"
                                     </button>
                                 </div>
                             </div>
-                            {move || library.with(|l| l.folder.clone()).map(|f| {
-                                let f_title = f.clone();
-                                view! {
-                                    <div class="folder-path" title=f_title>{f}</div>
+
+                            {move || {
+                                let lib = library.get();
+                                if lib.folders.is_empty() {
+                                    None
+                                } else {
+                                    let active = lib.active_folder.clone().unwrap_or_default();
+                                    let multi = lib.folders.len() > 1;
+                                    let active_for_all = active.clone();
+                                    let active_label = if active == ALL_LIBRARIES_KEY {
+                                        format!("All Libraries ({} folders)", lib.folders.len())
+                                    } else {
+                                        active.clone()
+                                    };
+                                    let active_label_title = active_label.clone();
+
+                                    Some(view! {
+                                        <div class="library-tabs">
+                                            {multi.then(|| {
+                                                let is_all = active_for_all == ALL_LIBRARIES_KEY;
+                                                view! {
+                                                    <div
+                                                        class="lib-chip"
+                                                        class:active=is_all
+                                                        on:click=move |_| switch_library(ALL_LIBRARIES_KEY.to_string())
+                                                        title="Show media from all libraries"
+                                                    >
+                                                        <span class="lib-chip-name">"All"</span>
+                                                    </div>
+                                                }
+                                            })}
+                                            {lib.folders.into_iter().map(|f| {
+                                                let path_select = f.path.clone();
+                                                let path_remove = f.path.clone();
+                                                let path_title = f.path.clone();
+                                                let is_active = active.eq_ignore_ascii_case(&f.path);
+                                                view! {
+                                                    <div
+                                                        class="lib-chip"
+                                                        class:active=is_active
+                                                        title=path_title
+                                                        on:click=move |_| switch_library(path_select.clone())
+                                                    >
+                                                        <span class="lib-chip-name">{f.name}</span>
+                                                        <button
+                                                            class="lib-chip-remove"
+                                                            title="Remove library"
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                delete_library(path_remove.clone());
+                                                            }
+                                                        >
+                                                            "×"
+                                                        </button>
+                                                    </div>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                        <div class="folder-path" title=active_label_title>{active_label}</div>
+                                    })
                                 }
-                            })}
+                            }}
+
                             <Show when=move || selected_path.with(|s| s.is_some())>
                                 <button
                                     class="play-selected-btn"
@@ -309,20 +401,21 @@ pub fn App() -> impl IntoView {
                         <div class="media-list">
                             {move || {
                                 let lib = library.get();
-                                if lib.folder.is_none() {
+                                let show_folder_badge = lib.active_folder.as_deref() == Some(ALL_LIBRARIES_KEY);
+                                if lib.folders.is_empty() {
                                     view! {
                                         <div class="empty-library">
-                                            <div>"No media folder selected."</div>
-                                            <button class="primary" on:click=choose_folder>
-                                                "Select Media Folder…"
+                                            <div>"No media libraries added yet."</div>
+                                            <button class="primary" on:click=add_library>
+                                                "+ Add Media Library…"
                                             </button>
                                         </div>
                                     }.into_any()
                                 } else if lib.items.is_empty() {
                                     view! {
                                         <div class="empty-library">
-                                            <div>"No audio or video files found in this folder."</div>
-                                            <button on:click=choose_folder>"Choose Another Folder…"</button>
+                                            <div>"No audio or video files found in this library."</div>
+                                            <button on:click=add_library>"+ Add Another Library…"</button>
                                         </div>
                                     }.into_any()
                                 } else {
@@ -338,6 +431,7 @@ pub fn App() -> impl IntoView {
                                                 let item_name = item.name.clone();
                                                 let item_alt = item.name.clone();
                                                 let item_title = item.name.clone();
+                                                let item_folder = item.folder.clone();
                                                 let is_video = item.kind == "video";
 
                                                 view! {
@@ -356,6 +450,9 @@ pub fn App() -> impl IntoView {
                                                         </div>
                                                         <div class="item-meta">
                                                             <div class="item-name" title=item_title>{item_name}</div>
+                                                            {show_folder_badge.then(|| view! {
+                                                                <div class="item-folder">{item_folder}</div>
+                                                            })}
                                                         </div>
                                                         <button
                                                             class="item-play-btn"

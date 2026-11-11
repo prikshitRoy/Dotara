@@ -75,6 +75,61 @@ body {
   font-size: 12px;
 }
 
+.library-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 92px;
+  overflow-y: auto;
+}
+
+.lib-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.lib-chip:hover {
+  border-color: var(--accent);
+}
+
+.lib-chip.active {
+  background: #2b2319;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.lib-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+
+.lib-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 50%;
+}
+
+.lib-chip-remove:hover:not(:disabled) {
+  color: #ff6b6b;
+  border-color: transparent;
+}
+
 .folder-path {
   font-size: 11px;
   color: var(--muted);
@@ -183,6 +238,15 @@ body {
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-word;
+}
+
+.item-folder {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .item-play-btn {

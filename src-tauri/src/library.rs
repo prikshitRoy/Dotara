@@ -1,10 +1,12 @@
 //! Media folder scanning and audio/video thumbnail extraction.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "webm", "avi", "mov", "wmv", "flv", "m4v", "ts", "mpg", "mpeg",
@@ -15,12 +17,21 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 ];
 
 pub const DEFAULT_MEDIA_FOLDER: &str = r"E:\Songs";
+pub const ALL_LIBRARIES_KEY: &str = "*";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryFolder {
+    pub path: String,
+    pub name: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryItem {
     pub path: String,
     pub name: String,
+    pub folder: String,
     /// `"video"` or `"audio"`
     pub kind: &'static str,
     /// Data URL (`data:image/...;base64,...`)
@@ -30,8 +41,27 @@ pub struct LibraryItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryResponse {
-    pub folder: Option<String>,
+    pub folders: Vec<LibraryFolder>,
+    /// Active library path, `"*"` for all libraries combined, or `None` when no libraries exist.
+    pub active_folder: Option<String>,
     pub items: Vec<LibraryItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedLibraries {
+    folders: Vec<String>,
+    active_folder: Option<String>,
+}
+
+pub fn folder_entry(path: &Path) -> LibraryFolder {
+    let full = path.to_string_lossy().into_owned();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| full.clone());
+    LibraryFolder { path: full, name }
 }
 
 pub fn media_kind(path: &Path) -> Option<&'static str> {
@@ -45,42 +75,106 @@ pub fn media_kind(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// Config file storing the user's chosen library folder.
-fn config_file_path() -> Option<PathBuf> {
+fn config_dir() -> Option<PathBuf> {
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let dir = PathBuf::from(local).join("Dotara");
         let _ = fs::create_dir_all(&dir);
-        return Some(dir.join("library_folder.txt"));
+        return Some(dir);
     }
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("library_folder.txt")))
+        .and_then(|p| p.parent().map(Path::to_path_buf))
 }
 
-/// Load the saved library folder, or default to `E:\Songs` if it exists.
-pub fn initial_folder() -> Option<PathBuf> {
+fn config_file_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("libraries.json"))
+}
+
+fn legacy_config_file_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("library_folder.txt"))
+}
+
+/// Load saved library folders (and active selection), defaulting to `E:\Songs` if present.
+pub fn initial_libraries() -> (Vec<PathBuf>, Option<String>) {
     if let Some(cfg) = config_file_path() {
-        if let Ok(saved) = fs::read_to_string(cfg) {
-            let trimmed = saved.trim();
-            if !trimmed.is_empty() {
-                let p = PathBuf::from(trimmed);
-                if p.is_dir() {
-                    return Some(p);
+        if let Ok(raw) = fs::read_to_string(&cfg) {
+            if let Ok(saved) = serde_json::from_str::<SavedLibraries>(&raw) {
+                let folders: Vec<PathBuf> = saved
+                    .folders
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_dir())
+                    .collect();
+                if !folders.is_empty() {
+                    let active = saved.active_folder.filter(|a| {
+                        a == ALL_LIBRARIES_KEY
+                            || folders.iter().any(|f| f.to_string_lossy() == a.as_str())
+                    }).or_else(|| folders.first().map(|f| f.to_string_lossy().into_owned()));
+                    return (folders, active);
                 }
             }
         }
     }
+
+    // Migrate single-folder config if present
+    let mut folders: Vec<PathBuf> = Vec::new();
+    if let Some(legacy) = legacy_config_file_path() {
+        if let Ok(saved) = fs::read_to_string(legacy) {
+            let trimmed = saved.trim();
+            if !trimmed.is_empty() {
+                let p = PathBuf::from(trimmed);
+                if p.is_dir() {
+                    folders.push(p);
+                }
+            }
+        }
+    }
+
     let default = PathBuf::from(DEFAULT_MEDIA_FOLDER);
-    if default.is_dir() {
-        Some(default)
-    } else {
-        None
+    if default.is_dir() && !folders.iter().any(|p| p == &default) {
+        folders.push(default);
+    }
+
+    let active = folders.first().map(|f| f.to_string_lossy().into_owned());
+    if !folders.is_empty() {
+        save_libraries(&folders, active.as_deref());
+    }
+    (folders, active)
+}
+
+pub fn save_libraries(folders: &[PathBuf], active_folder: Option<&str>) {
+    if let Some(cfg) = config_file_path() {
+        let payload = SavedLibraries {
+            folders: folders
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            active_folder: active_folder.map(str::to_owned),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&payload) {
+            let _ = fs::write(cfg, json);
+        }
     }
 }
 
-pub fn save_folder(path: &Path) {
-    if let Some(cfg) = config_file_path() {
-        let _ = fs::write(cfg, path.to_string_lossy().as_bytes());
+/// Scan one or more library folders based on `active_folder`.
+pub fn scan_libraries(folders: &[PathBuf], active_folder: Option<&str>) -> Vec<LibraryItem> {
+    match active_folder {
+        Some(ALL_LIBRARIES_KEY) => {
+            let mut all = Vec::new();
+            for folder in folders {
+                if folder.is_dir() {
+                    all.extend(scan_folder(folder));
+                }
+            }
+            all
+        }
+        Some(target) => folders
+            .iter()
+            .find(|f| f.to_string_lossy() == target && f.is_dir())
+            .map(|f| scan_folder(f))
+            .unwrap_or_default(),
+        None => Vec::new(),
     }
 }
 
@@ -89,6 +183,7 @@ pub fn scan_folder(folder: &Path) -> Vec<LibraryItem> {
     let Ok(entries) = fs::read_dir(folder) else {
         return Vec::new();
     };
+    let folder_str = folder.to_string_lossy().into_owned();
 
     let mut media_paths: Vec<(PathBuf, &'static str)> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -114,6 +209,7 @@ pub fn scan_folder(folder: &Path) -> Vec<LibraryItem> {
             LibraryItem {
                 path: path.to_string_lossy().into_owned(),
                 name,
+                folder: folder_str.clone(),
                 kind,
                 thumbnail,
             }
@@ -121,8 +217,25 @@ pub fn scan_folder(folder: &Path) -> Vec<LibraryItem> {
         .collect()
 }
 
-/// Extract a thumbnail data URL for a media file.
+fn thumb_cache() -> &'static Mutex<HashMap<PathBuf, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Extract a thumbnail data URL for a media file (cached in memory).
 pub fn extract_thumbnail(path: &Path, kind: &str) -> String {
+    if let Some(cached) = thumb_cache().lock().unwrap().get(path).cloned() {
+        return cached;
+    }
+    let result = extract_thumbnail_uncached(path, kind);
+    thumb_cache()
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf(), result.clone());
+    result
+}
+
+fn extract_thumbnail_uncached(path: &Path, kind: &str) -> String {
     // 1. OS Shell thumbnail (extracts video frames for .webm/.mp4/.mkv and cover art for .mp3/.m4a).
     #[cfg(windows)]
     if let Some(data_url) = win_shell::shell_thumbnail_png(path, 128, 128) {

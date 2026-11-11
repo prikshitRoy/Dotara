@@ -41,7 +41,8 @@ struct Status {
 
 struct Inner {
     media: Option<MediaInfo>,
-    folder: Option<PathBuf>,
+    folders: Vec<PathBuf>,
+    active_folder: Option<String>,
     /// Volume the user asked for; applied once VLC has an audio output.
     volume: i32,
     surface_visible: bool,
@@ -75,49 +76,115 @@ impl AppState {
         self.inner.lock().unwrap().media = Some(info.clone());
         Ok(info)
     }
+
+    fn library_response(&self) -> LibraryResponse {
+        let (folders, active_folder) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.folders.clone(), inner.active_folder.clone())
+        };
+        let items = library::scan_libraries(&folders, active_folder.as_deref());
+        let folder_entries = folders.iter().map(|p| library::folder_entry(p)).collect();
+        LibraryResponse {
+            folders: folder_entries,
+            active_folder,
+            items,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Commands (all async so they never block the UI thread)
 // ---------------------------------------------------------------------------
 
-/// Return the active library folder (defaulting to `E:\Songs` if present) and its media items.
+/// Return all saved media library folders, the active selection, and its media items.
 #[tauri::command]
 async fn get_library(state: State<'_, AppState>) -> Result<LibraryResponse, String> {
-    let folder = state.inner.lock().unwrap().folder.clone();
-    let items = match &folder {
-        Some(dir) if dir.is_dir() => library::scan_folder(dir),
-        _ => Vec::new(),
-    };
-    Ok(LibraryResponse {
-        folder: folder.map(|p| p.to_string_lossy().into_owned()),
-        items,
-    })
+    Ok(state.library_response())
 }
 
-/// Let the user pick a media folder and scan all audio/video files inside it.
+/// Let the user pick a media folder to add as a library, make it active, and scan it.
 #[tauri::command]
-async fn pick_folder(
+async fn add_folder(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<LibraryResponse>, String> {
-    let mut dialog = app.dialog().file().set_title("Select Media Folder");
-    if let Some(current) = state.inner.lock().unwrap().folder.clone() {
-        if current.is_dir() {
-            dialog = dialog.set_directory(current);
+    let mut dialog = app.dialog().file().set_title("Add Media Library Folder");
+    let start_dir = {
+        let inner = state.inner.lock().unwrap();
+        inner
+            .active_folder
+            .as_deref()
+            .filter(|a| *a != library::ALL_LIBRARIES_KEY)
+            .map(PathBuf::from)
+            .or_else(|| inner.folders.last().cloned())
+    };
+    if let Some(dir) = start_dir {
+        if dir.is_dir() {
+            dialog = dialog.set_directory(dir);
         }
     }
     let Some(picked) = dialog.blocking_pick_folder() else {
         return Ok(None);
     };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    library::save_folder(&path);
-    state.inner.lock().unwrap().folder = Some(path.clone());
-    let items = library::scan_folder(&path);
-    Ok(Some(LibraryResponse {
-        folder: Some(path.to_string_lossy().into_owned()),
-        items,
-    }))
+    let path_str = path.to_string_lossy().into_owned();
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if !inner
+            .folders
+            .iter()
+            .any(|p| p.to_string_lossy().eq_ignore_ascii_case(&path_str))
+        {
+            inner.folders.push(path);
+        }
+        inner.active_folder = Some(path_str);
+        library::save_libraries(&inner.folders, inner.active_folder.as_deref());
+    }
+    Ok(Some(state.library_response()))
+}
+
+/// Switch the active media library folder (or `"*"` to view all libraries combined).
+#[tauri::command]
+async fn select_folder(
+    state: State<'_, AppState>,
+    folder: String,
+) -> Result<LibraryResponse, String> {
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner.active_folder = Some(folder);
+        library::save_libraries(&inner.folders, inner.active_folder.as_deref());
+    }
+    Ok(state.library_response())
+}
+
+/// Remove a media library folder from the user's libraries list.
+#[tauri::command]
+async fn remove_folder(
+    state: State<'_, AppState>,
+    folder: String,
+) -> Result<LibraryResponse, String> {
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner
+            .folders
+            .retain(|p| !p.to_string_lossy().eq_ignore_ascii_case(&folder));
+        let active_invalid = match inner.active_folder.as_deref() {
+            None => true,
+            Some(library::ALL_LIBRARIES_KEY) => inner.folders.is_empty(),
+            Some(active) => !inner
+                .folders
+                .iter()
+                .any(|p| p.to_string_lossy().eq_ignore_ascii_case(active)),
+        };
+        if active_invalid {
+            inner.active_folder = inner
+                .folders
+                .first()
+                .map(|p| p.to_string_lossy().into_owned());
+        }
+        library::save_libraries(&inner.folders, inner.active_folder.as_deref());
+    }
+    Ok(state.library_response())
 }
 
 /// Load a file path from the library and immediately start playing it.
@@ -273,13 +340,14 @@ fn main() {
                 }
             }
 
-            let folder = library::initial_folder();
+            let (folders, active_folder) = library::initial_libraries();
             app.manage(AppState {
                 player,
                 surface,
                 inner: Mutex::new(Inner {
                     media: None,
-                    folder,
+                    folders,
+                    active_folder,
                     volume: 80,
                     surface_visible: false,
                 }),
@@ -288,7 +356,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_library,
-            pick_folder,
+            add_folder,
+            select_folder,
+            remove_folder,
             play_file,
             open_file,
             play,

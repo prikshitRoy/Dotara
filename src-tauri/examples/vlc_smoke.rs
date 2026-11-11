@@ -10,7 +10,11 @@ mod vlc;
 use std::{path::Path, thread::sleep, time::Duration};
 
 fn main() {
-    let folder = library::initial_folder().unwrap_or_else(|| Path::new(r"E:\Songs").to_path_buf());
+    let (folders, _) = library::initial_libraries();
+    let folder = folders
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Path::new(r"E:\Songs").to_path_buf());
     println!("Scanning folder: {}", folder.display());
     let items = library::scan_folder(&folder);
     println!("Found {} media items:", items.len());

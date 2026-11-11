@@ -5,8 +5,9 @@ A desktop media player built on the **VLC engine (libVLC)** and **Tauri 2**, wit
 ## Features
 
 - **Docked Media Library Side Menu** (`☰ Library` toggle button — docked alongside the player, not a popup)
-  - Defaults to `E:\Songs` if present, or shows a folder picker option when no folder is selected (and remembers the chosen folder across launches)
-  - Scrollable list of all audio and video files in the folder
+  - Supports **multiple Media Libraries** (`+ Add Library…` to add folders, clickable library chips to switch between libraries or view **All** combined, and `×` to remove a library)
+  - Defaults to `E:\Songs` if present and persists all added libraries in `%LOCALAPPDATA%\Dotara\libraries.json`
+  - Scrollable list of all audio and video files in the active library
   - Automatic **audio & video thumbnails** (OS video frame / album art extraction via `IShellItemImageFactory`, sidecar `.jpg`/`.png`/`.webp` matching, embedded ID3/Vorbis/MP4 cover art scanning, and SVG fallback icons)
   - Select any item and click **Play Selected** / the bottom **Play** button, or click the **▶** button right on the item row
 - Play / pause, stop, seek bar with elapsed / total time, and volume control
