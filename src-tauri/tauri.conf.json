@@ -29,8 +29,7 @@
     "active": true,
     "targets": ["nsis"],
     "resources": {
-      "vlc/": "vlc/",
-      "../testvideo.webm": "testvideo.webm"
+      "vlc/": "vlc/"
     },
     "icon": [
       "icons/32x32.png",

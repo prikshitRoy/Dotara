@@ -1,9 +1,11 @@
 // Prevents an additional console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod library;
 mod surface;
 mod vlc;
 
+use library::{LibraryResponse, AUDIO_EXTENSIONS, VIDEO_EXTENSIONS};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,6 +24,8 @@ const MEDIA_EXTENSIONS: &[&str] = &[
 struct MediaInfo {
     path: String,
     name: String,
+    kind: &'static str,
+    thumbnail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +41,7 @@ struct Status {
 
 struct Inner {
     media: Option<MediaInfo>,
+    folder: Option<PathBuf>,
     /// Volume the user asked for; applied once VLC has an audio output.
     volume: i32,
     surface_visible: bool,
@@ -55,51 +60,82 @@ impl AppState {
 
     fn load(&self, path: &Path) -> Result<MediaInfo, String> {
         self.player()?.load(path)?;
+        let kind = library::media_kind(path).unwrap_or("audio");
+        let thumbnail = library::extract_thumbnail(path, kind);
         let info = MediaInfo {
             path: path.to_string_lossy().into_owned(),
             name: path
-                .file_name()
+                .file_stem()
+                .or_else(|| path.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
+            kind,
+            thumbnail,
         };
         self.inner.lock().unwrap().media = Some(info.clone());
         Ok(info)
     }
 }
 
-/// Look for bundled `testvideo.webm` next to the executable (or in the workspace during dev).
-fn find_test_media() -> Option<PathBuf> {
-    const NAME: &str = "testvideo.webm";
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
-        dirs.push(exe_dir);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd.clone());
-        if let Some(parent) = cwd.parent() {
-            dirs.push(parent.to_path_buf());
-        }
-    }
-    dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."));
-    dirs.into_iter().map(|d| d.join(NAME)).find(|p| p.is_file())
-}
-
 // ---------------------------------------------------------------------------
 // Commands (all async so they never block the UI thread)
 // ---------------------------------------------------------------------------
 
-/// Load the bundled test file (if present) without starting playback.
+/// Return the active library folder (defaulting to `E:\Songs` if present) and its media items.
 #[tauri::command]
-async fn load_default(state: State<'_, AppState>) -> Result<Option<MediaInfo>, String> {
-    match find_test_media() {
-        Some(path) => state.load(&path).map(Some),
-        None => Ok(None),
+async fn get_library(state: State<'_, AppState>) -> Result<LibraryResponse, String> {
+    let folder = state.inner.lock().unwrap().folder.clone();
+    let items = match &folder {
+        Some(dir) if dir.is_dir() => library::scan_folder(dir),
+        _ => Vec::new(),
+    };
+    Ok(LibraryResponse {
+        folder: folder.map(|p| p.to_string_lossy().into_owned()),
+        items,
+    })
+}
+
+/// Let the user pick a media folder and scan all audio/video files inside it.
+#[tauri::command]
+async fn pick_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<LibraryResponse>, String> {
+    let mut dialog = app.dialog().file().set_title("Select Media Folder");
+    if let Some(current) = state.inner.lock().unwrap().folder.clone() {
+        if current.is_dir() {
+            dialog = dialog.set_directory(current);
+        }
     }
+    let Some(picked) = dialog.blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    library::save_folder(&path);
+    state.inner.lock().unwrap().folder = Some(path.clone());
+    let items = library::scan_folder(&path);
+    Ok(Some(LibraryResponse {
+        folder: Some(path.to_string_lossy().into_owned()),
+        items,
+    }))
+}
+
+/// Load a file path from the library and immediately start playing it.
+#[tauri::command]
+async fn play_file(state: State<'_, AppState>, path: String) -> Result<MediaInfo, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err(format!("File not found: {path}"));
+    }
+    let info = state.load(&p)?;
+    state.player()?.play()?;
+    Ok(info)
 }
 
 /// Show a native file picker, load the chosen file and start playing it.
 #[tauri::command]
 async fn open_file(app: AppHandle, state: State<'_, AppState>) -> Result<Option<MediaInfo>, String> {
+    let _ = (VIDEO_EXTENSIONS, AUDIO_EXTENSIONS);
     let picked = app
         .dialog()
         .file()
@@ -160,9 +196,20 @@ async fn set_volume(state: State<'_, AppState>, volume: i32) -> Result<(), Strin
 
 /// Bounds of the `.video-area` element, in physical pixels.
 #[tauri::command]
-async fn set_video_bounds(state: State<'_, AppState>, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+async fn set_video_bounds(
+    state: State<'_, AppState>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
     if let Some(surface) = &state.surface {
-        surface.set_bounds(x.round() as i32, y.round() as i32, width.round() as i32, height.round() as i32);
+        surface.set_bounds(
+            x.round() as i32,
+            y.round() as i32,
+            width.round() as i32,
+            height.round() as i32,
+        );
     }
     Ok(())
 }
@@ -226,15 +273,23 @@ fn main() {
                 }
             }
 
+            let folder = library::initial_folder();
             app.manage(AppState {
                 player,
                 surface,
-                inner: Mutex::new(Inner { media: None, volume: 80, surface_visible: false }),
+                inner: Mutex::new(Inner {
+                    media: None,
+                    folder,
+                    volume: 80,
+                    surface_visible: false,
+                }),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            load_default,
+            get_library,
+            pick_folder,
+            play_file,
             open_file,
             play,
             pause,

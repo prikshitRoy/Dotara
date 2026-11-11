@@ -4,13 +4,15 @@ A desktop media player built on the **VLC engine (libVLC)** and **Tauri 2**, wit
 
 ## Features
 
-- Play / pause, stop
-- Seek bar with elapsed / total time
-- Volume control
-- Native file picker (video and audio formats)
-- Video rendered by libVLC directly into the app window (hardware-accelerated, any format VLC supports)
-- Audio-only files show a placeholder instead of a black video area
-- Auto-loads `testvideo.webm` from the project root on start (handy during development)
+- **Docked Media Library Side Menu** (`☰ Library` toggle button — docked alongside the player, not a popup)
+  - Defaults to `E:\Songs` if present, or shows a folder picker option when no folder is selected (and remembers the chosen folder across launches)
+  - Scrollable list of all audio and video files in the folder
+  - Automatic **audio & video thumbnails** (OS video frame / album art extraction via `IShellItemImageFactory`, sidecar `.jpg`/`.png`/`.webp` matching, embedded ID3/Vorbis/MP4 cover art scanning, and SVG fallback icons)
+  - Select any item and click **Play Selected** / the bottom **Play** button, or click the **▶** button right on the item row
+- Play / pause, stop, seek bar with elapsed / total time, and volume control
+- Native single-file picker (**Open File…**)
+- Video rendered by libVLC directly into a Win32 child surface inside the app window (automatically resizes when the side menu opens or closes)
+- Audio tracks display their cover art thumbnail and title in the main player view
 
 ## Requirements
 
@@ -19,10 +21,9 @@ A desktop media player built on the **VLC engine (libVLC)** and **Tauri 2**, wit
 | Rust (MSVC toolchain) | `rustup target add wasm32-unknown-unknown` |
 | [Trunk](https://trunkrs.dev) | `cargo binstall trunk` or `cargo install trunk --locked` |
 | Tauri CLI v2 | `cargo install tauri-cli --version "^2"` |
-| VLC 3.x, 64-bit | Installed at `C:\Program Files\VideoLAN\VLC`, or set `DOTARA_VLC_DIR` |
 | WebView2 | Preinstalled on Windows 10/11 |
 
-No VLC SDK, headers or import libraries are needed — `libvlc.dll` is loaded at runtime.
+No VLC SDK, headers, or external VLC installation is needed at runtime — `libvlc.dll`, `libvlccore.dll`, and playback `plugins/` are bundled directly with the app.
 
 ## Getting started
 
@@ -30,42 +31,37 @@ No VLC SDK, headers or import libraries are needed — `libvlc.dll` is loaded at
 # development (hot-reloads the UI)
 cargo tauri dev
 
-# release build + installer
+# release build + self-contained .exe installer
 cargo tauri build
 ```
-
-Drop a `testvideo.webm` into the project root to have it loaded automatically, or use **Open…** to pick any file.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     UI["Leptos UI (WASM)<br/>src/app.rs"] -- "invoke(cmd)" --> CMD["Tauri commands<br/>src-tauri/src/main.rs"]
+    CMD --> LIB["Library & Thumbnails<br/>src-tauri/src/library.rs"]
     CMD --> VLC["libVLC binding<br/>src-tauri/src/vlc.rs"]
     CMD --> SURF["Native video surface<br/>src-tauri/src/surface.rs"]
     VLC -- "renders into HWND" --> SURF
     UI -- "video-area bounds" --> CMD
 ```
 
-- **libVLC binding** — `vlc.rs` resolves the needed `libvlc_*` functions from `libvlc.dll` via `libloading` and wraps them in a safe `Player` type.
-- **Video surface** — WebView2 cannot display libVLC output, so `surface.rs` creates a borderless Win32 child window inside the Tauri window. The UI reports the bounds of its `.video-area` element (in physical pixels) on load and on every resize, and the surface is kept on top of exactly that region. It is only shown while VLC has a video output.
-- **Commands** — `open_file`, `load_default`, `play`, `pause`, `toggle_pause`, `stop`, `seek`, `set_volume`, `set_video_bounds`, `status`. The UI polls `status` every 250 ms for state, position, length and volume.
-- **UI** — `src/app.rs` (Leptos components) and `src/tauri.rs` (typed `invoke` wrapper over `window.__TAURI__.core.invoke`).
+- **Library & thumbnails** — `library.rs` scans the selected media folder (`E:\Songs` by default) and extracts thumbnails for both video and audio files using Windows Shell (`IShellItemImageFactory`), sidecar images, and embedded tag artwork.
+- **libVLC binding** — `vlc.rs` resolves `libvlc_*` functions from the bundled `vlc/libvlc.dll` via `libloading` and wraps them in a safe `Player` type.
+- **Video surface** — `surface.rs` creates a borderless Win32 child window inside the Tauri window. Whenever the window resizes or the side menu opens/closes, the UI reports `.video-area` bounds and the native video surface resizes alongside it.
+- **Commands** — `get_library`, `pick_folder`, `play_file`, `open_file`, `play`, `pause`, `toggle_pause`, `stop`, `seek`, `set_volume`, `set_video_bounds`, `status`.
 
 ### Self-contained VLC bundle
 
-[`scripts/prepare-vlc.ps1`](file:///e:/Software%20Projects/Music%20Player/Dotara/scripts/prepare-vlc.ps1) stages `libvlc.dll`, `libvlccore.dll`, and the playback `plugins/` (plus a freshly generated `plugins.dat` cache) into `src-tauri/vlc/`. `tauri.conf.json` bundles `src-tauri/vlc/` and `testvideo.webm` directly into the NSIS `.exe` installer so the installed app does not depend on an external VLC installation or search outside its own directory.
-
-Runtime lookup order:
-1. `<exe_dir>\vlc\` (installed & release builds)
-2. `<exe_dir>\`
-3. `src-tauri\vlc\` (development builds)
+[`scripts/prepare-vlc.ps1`](file:///e:/Software%20Projects/Music%20Player/Dotara/scripts/prepare-vlc.ps1) stages `libvlc.dll`, `libvlccore.dll`, and the playback `plugins/` (plus a freshly generated `plugins.dat` cache) into `src-tauri/vlc/`. `tauri.conf.json` bundles `src-tauri/vlc/` directly into the NSIS `.exe` installer so the installed app does not depend on an external VLC installation or search outside its own directory.
 
 ## Project layout
 
 ```
 .
 ├── index.html, styles.css, Trunk.toml   # Trunk entry point & styling
+├── scripts/prepare-vlc.ps1              # Stages bundled VLC runtime into src-tauri/vlc
 ├── src/                                 # Leptos UI crate (dotara-ui)
 │   ├── main.rs
 │   ├── app.rs
@@ -73,6 +69,7 @@ Runtime lookup order:
 └── src-tauri/                           # Tauri backend crate (dotara)
     ├── src/
     │   ├── main.rs                      # app setup + commands
+    │   ├── library.rs                   # folder scanner + audio/video thumbnails
     │   ├── vlc.rs                       # libVLC binding
     │   └── surface.rs                   # Win32 video surface
     ├── examples/vlc_smoke.rs            # headless libVLC test
@@ -80,16 +77,3 @@ Runtime lookup order:
     ├── icons/
     └── tauri.conf.json
 ```
-
-## Testing libVLC without the UI
-
-```powershell
-cargo run -p dotara --example vlc_smoke -- testvideo.webm
-```
-
-Plays the file headlessly and prints state, position and length after play, pause, seek and stop.
-
-## Limitations
-
-- Video embedding is implemented for **Windows only** so far (Linux/macOS would use `libvlc_media_player_set_xwindow` / `set_nsobject`).
-- HTML cannot be drawn on top of the video, because it is a native window. Controls live below the video area.

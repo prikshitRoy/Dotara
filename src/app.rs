@@ -10,6 +10,24 @@ use std::time::Duration;
 pub struct MediaInfo {
     pub path: String,
     pub name: String,
+    pub kind: String,
+    pub thumbnail: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryItem {
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+    pub thumbnail: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryResponse {
+    pub folder: Option<String>,
+    pub items: Vec<LibraryItem>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -41,19 +59,29 @@ struct VolumeArgs {
     volume: i32,
 }
 
+#[derive(Serialize)]
+struct PathArgs {
+    path: String,
+}
+
 /// What to show in the video area when the native VLC surface is hidden.
 #[derive(Clone, PartialEq)]
 enum Placeholder {
     Empty,
-    Audio(String),
+    Audio { name: String, thumbnail: String },
     Ready(String),
 }
 
 fn placeholder_for(s: &Status) -> Placeholder {
     match &s.media {
         None => Placeholder::Empty,
-        Some(m) if !s.has_video && matches!(s.state.as_str(), "playing" | "paused" | "buffering") => {
-            Placeholder::Audio(m.name.clone())
+        Some(m)
+            if !s.has_video && matches!(s.state.as_str(), "playing" | "paused" | "buffering") =>
+        {
+            Placeholder::Audio {
+                name: m.name.clone(),
+                thumbnail: m.thumbnail.clone(),
+            }
         }
         Some(m) => Placeholder::Ready(m.name.clone()),
     }
@@ -75,6 +103,11 @@ pub fn App() -> impl IntoView {
     let (error, set_error) = signal(None::<String>);
     // Position (ms) while the user is dragging the seek bar.
     let (scrub, set_scrub) = signal(None::<i64>);
+    // Side menu open/closed state (docked panel, not a popup).
+    let (menu_open, set_menu_open) = signal(true);
+    let (library, set_library) = signal(LibraryResponse::default());
+    let (selected_path, set_selected_path) = signal(None::<String>);
+
     let video_ref = NodeRef::<leptos::html::Div>::new();
 
     // --- status polling -----------------------------------------------------
@@ -107,17 +140,26 @@ pub fn App() -> impl IntoView {
         }
     };
     Effect::new(move |_| {
+        // Re-measure whenever the video ref mounts or the side menu opens/closes.
+        let _ = menu_open.get();
         if video_ref.get().is_some() {
             report_bounds();
+            set_timeout(report_bounds, Duration::from_millis(30));
         }
     });
     let resize = window_event_listener(ev::resize, move |_| report_bounds());
     on_cleanup(move || resize.remove());
 
-    // Load testvideo.webm (if present) on startup.
+    // Load initial library folder (defaults to E:\Songs if present).
     spawn_local(async move {
-        if let Err(e) = invoke::<_, Option<MediaInfo>>("load_default", &NoArgs {}).await {
-            set_error.set(Some(e));
+        match invoke::<_, LibraryResponse>("get_library", &NoArgs {}).await {
+            Ok(lib) => {
+                if let Some(first) = lib.items.first() {
+                    set_selected_path.set(Some(first.path.clone()));
+                }
+                set_library.set(lib);
+            }
+            Err(e) => set_error.set(Some(e)),
         }
         refresh();
     });
@@ -132,15 +174,76 @@ pub fn App() -> impl IntoView {
             refresh();
         })
     };
+
+    let play_item = move |path: String| {
+        set_selected_path.set(Some(path.clone()));
+        spawn_local(async move {
+            let current_playing_path = status.with_untracked(|s| {
+                if s.state == "playing" || s.state == "paused" {
+                    s.media.as_ref().map(|m| m.path.clone())
+                } else {
+                    None
+                }
+            });
+            if current_playing_path.as_deref() == Some(path.as_str()) {
+                match invoke_unit("toggle_pause", &NoArgs {}).await {
+                    Ok(()) => set_error.set(None),
+                    Err(e) => set_error.set(Some(e)),
+                }
+            } else {
+                match invoke::<_, MediaInfo>("play_file", &PathArgs { path }).await {
+                    Ok(_) => set_error.set(None),
+                    Err(e) => set_error.set(Some(e)),
+                }
+            }
+            refresh();
+        });
+    };
+
+    let play_or_toggle = move |_| {
+        let loaded_path = status.with_untracked(|s| s.media.as_ref().map(|m| m.path.clone()));
+        let sel = selected_path.get_untracked();
+        if let Some(sel_path) = sel {
+            if loaded_path.as_deref() != Some(sel_path.as_str()) {
+                play_item(sel_path);
+                return;
+            }
+        }
+        run("toggle_pause");
+    };
+
+    let choose_folder = move |_| {
+        spawn_local(async move {
+            match invoke::<_, Option<LibraryResponse>>("pick_folder", &NoArgs {}).await {
+                Ok(Some(lib)) => {
+                    if let Some(first) = lib.items.first() {
+                        set_selected_path.set(Some(first.path.clone()));
+                    } else {
+                        set_selected_path.set(None);
+                    }
+                    set_library.set(lib);
+                    set_error.set(None);
+                }
+                Ok(None) => {}
+                Err(e) => set_error.set(Some(e)),
+            }
+        })
+    };
+
     let open = move |_| {
         spawn_local(async move {
             match invoke::<_, Option<MediaInfo>>("open_file", &NoArgs {}).await {
-                Ok(_) => set_error.set(None),
+                Ok(Some(info)) => {
+                    set_selected_path.set(Some(info.path));
+                    set_error.set(None);
+                }
+                Ok(None) => {}
                 Err(e) => set_error.set(Some(e)),
             }
             refresh();
         })
     };
+
     let seek_to = move |ms: i64| {
         set_scrub.set(None);
         spawn_local(async move {
@@ -148,6 +251,7 @@ pub fn App() -> impl IntoView {
             refresh();
         })
     };
+
     let change_volume = move |volume: i32| {
         set_status.update(|s| s.volume = volume);
         spawn_local(async move {
@@ -156,7 +260,9 @@ pub fn App() -> impl IntoView {
     };
 
     // --- derived state ------------------------------------------------------
-    let has_media = move || status.with(|s| s.media.is_some());
+    let has_media_or_selection =
+        move || status.with(|s| s.media.is_some()) || selected_path.with(|p| p.is_some());
+    let has_loaded_media = move || status.with(|s| s.media.is_some());
     let is_playing = move || status.with(|s| s.state == "playing");
     let placeholder = Memo::new(move |_| status.with(placeholder_for));
     let position = move || scrub.get().unwrap_or_else(|| status.with(|s| s.time_ms));
@@ -164,17 +270,138 @@ pub fn App() -> impl IntoView {
 
     view! {
         <div class="app">
-            <div class="video-area" node_ref=video_ref>
-                {move || match placeholder.get() {
-                    Placeholder::Empty => view! { <div>"Open a video or audio file to start"</div> }.into_any(),
-                    Placeholder::Audio(name) => view! {
-                        <div class="audio-placeholder">
-                            <div class="note">"♪"</div>
-                            <div>{name}</div>
+            <div class="workspace">
+                <Show when=move || menu_open.get()>
+                    <aside class="side-menu">
+                        <div class="side-header">
+                            <div class="side-title-row">
+                                <span class="side-title">"Media Library"</span>
+                                <div class="side-header-actions">
+                                    <button class="small-btn" on:click=choose_folder>
+                                        {move || if library.with(|l| l.folder.is_some()) {
+                                            "Change Folder…"
+                                        } else {
+                                            "Select Folder…"
+                                        }}
+                                    </button>
+                                </div>
+                            </div>
+                            {move || library.with(|l| l.folder.clone()).map(|f| {
+                                let f_title = f.clone();
+                                view! {
+                                    <div class="folder-path" title=f_title>{f}</div>
+                                }
+                            })}
+                            <Show when=move || selected_path.with(|s| s.is_some())>
+                                <button
+                                    class="play-selected-btn"
+                                    on:click=move |_| {
+                                        if let Some(p) = selected_path.get_untracked() {
+                                            play_item(p);
+                                        }
+                                    }
+                                >
+                                    "▶ Play Selected"
+                                </button>
+                            </Show>
                         </div>
-                    }.into_any(),
-                    Placeholder::Ready(name) => view! { <div>{format!("{name} — press Play")}</div> }.into_any(),
-                }}
+
+                        <div class="media-list">
+                            {move || {
+                                let lib = library.get();
+                                if lib.folder.is_none() {
+                                    view! {
+                                        <div class="empty-library">
+                                            <div>"No media folder selected."</div>
+                                            <button class="primary" on:click=choose_folder>
+                                                "Select Media Folder…"
+                                            </button>
+                                        </div>
+                                    }.into_any()
+                                } else if lib.items.is_empty() {
+                                    view! {
+                                        <div class="empty-library">
+                                            <div>"No audio or video files found in this folder."</div>
+                                            <button on:click=choose_folder>"Choose Another Folder…"</button>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="media-items">
+                                            {lib.items.into_iter().map(|item| {
+                                                let item_path = item.path.clone();
+                                                let item_path_click = item.path.clone();
+                                                let item_path_dbl = item.path.clone();
+                                                let item_path_btn = item.path.clone();
+                                                let item_path_active = item.path.clone();
+                                                let item_path_playing = item.path.clone();
+                                                let item_name = item.name.clone();
+                                                let item_alt = item.name.clone();
+                                                let item_title = item.name.clone();
+                                                let is_video = item.kind == "video";
+
+                                                view! {
+                                                    <div
+                                                        class="media-item"
+                                                        class:selected=move || selected_path.with(|s| s.as_deref() == Some(item_path.as_str()))
+                                                        class:playing=move || status.with(|s| s.media.as_ref().map(|m| m.path.as_str()) == Some(item_path_active.as_str()))
+                                                        on:click=move |_| set_selected_path.set(Some(item_path_click.clone()))
+                                                        on:dblclick=move |_| play_item(item_path_dbl.clone())
+                                                    >
+                                                        <div class="thumb-wrap">
+                                                            <img class="thumb" src=item.thumbnail alt=item_alt loading="lazy" />
+                                                            <span class="kind-badge" class:video=is_video>
+                                                                {if is_video { "VIDEO" } else { "AUDIO" }}
+                                                            </span>
+                                                        </div>
+                                                        <div class="item-meta">
+                                                            <div class="item-name" title=item_title>{item_name}</div>
+                                                        </div>
+                                                        <button
+                                                            class="item-play-btn"
+                                                            title="Play / Pause"
+                                                            on:click=move |ev| {
+                                                                ev.stop_propagation();
+                                                                play_item(item_path_btn.clone());
+                                                            }
+                                                        >
+                                                            {move || {
+                                                                let this_playing = status.with(|s| {
+                                                                    s.state == "playing"
+                                                                        && s.media.as_ref().map(|m| m.path.as_str()) == Some(item_path_playing.as_str())
+                                                                });
+                                                                if this_playing { "⏸" } else { "▶" }
+                                                            }}
+                                                        </button>
+                                                    </div>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }.into_any()
+                                }
+                            }}
+                        </div>
+                    </aside>
+                </Show>
+
+                <div class="video-area" node_ref=video_ref>
+                    {move || match placeholder.get() {
+                        Placeholder::Empty => view! {
+                            <div class="empty-stage">
+                                <div>"Select a track from the side menu or open a file to start"</div>
+                            </div>
+                        }.into_any(),
+                        Placeholder::Audio { name, thumbnail } => view! {
+                            <div class="audio-placeholder">
+                                <img class="audio-cover" src=thumbnail alt=name.clone() />
+                                <div class="audio-title">{name}</div>
+                            </div>
+                        }.into_any(),
+                        Placeholder::Ready(name) => view! {
+                            <div>{format!("{name} — press Play")}</div>
+                        }.into_any(),
+                    }}
+                </div>
             </div>
 
             <div class="controls">
@@ -194,11 +421,24 @@ pub fn App() -> impl IntoView {
                 </div>
 
                 <div class="button-row">
-                    <button on:click=open>"Open…"</button>
-                    <button class="primary" disabled=move || !has_media() on:click=move |_| run("toggle_pause")>
+                    <button
+                        class:active-toggle=move || menu_open.get()
+                        on:click=move |_| set_menu_open.update(|v| *v = !*v)
+                        title="Toggle Library Side Menu"
+                    >
+                        "☰ Library"
+                    </button>
+                    <button on:click=open>"Open File…"</button>
+                    <button
+                        class="primary"
+                        disabled=move || !has_media_or_selection()
+                        on:click=play_or_toggle
+                    >
                         {move || if is_playing() { "⏸ Pause" } else { "▶ Play" }}
                     </button>
-                    <button disabled=move || !has_media() on:click=move |_| run("stop")>"⏹ Stop"</button>
+                    <button disabled=move || !has_loaded_media() on:click=move |_| run("stop")>
+                        "⏹ Stop"
+                    </button>
                     <div class="title">
                         {move || status.with(|s| s.media.as_ref().map(|m| m.name.clone()).unwrap_or_default())}
                     </div>
