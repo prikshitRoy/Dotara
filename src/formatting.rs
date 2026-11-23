@@ -44,6 +44,22 @@ pub fn active_library_label(active_folder: &str, folder_count: usize) -> String 
     }
 }
 
+/// Return `true` when `path` is the currently active track (opening, buffering, playing, or paused).
+pub fn is_track_active(status: &Status, path: &str) -> bool {
+    should_toggle_loaded_media(status)
+        && status.media.as_ref().map(|m| m.path.as_str()) == Some(path)
+}
+
+/// Return `true` when bottom Play/Pause should control the currently loaded active track
+/// rather than switching to another row selected in the library list.
+pub fn should_toggle_loaded_media(status: &Status) -> bool {
+    status.media.is_some()
+        && matches!(
+            status.state.as_str(),
+            "opening" | "buffering" | "playing" | "paused"
+        )
+}
+
 /// Return checked tracks in library display order, falling back to the single highlighted row.
 pub fn resolve_selected_paths(
     items: &[LibraryItem],
@@ -146,5 +162,32 @@ mod tests {
             resolve_selected_paths(&items, &HashSet::new(), Some("2.mp3")),
             vec!["2.mp3".to_string()]
         );
+    }
+
+    #[test]
+    fn identifies_active_track_only_when_matching_and_not_stopped() {
+        let media = MediaInfo {
+            path: "a.mp3".into(),
+            name: "A".into(),
+            kind: "audio".into(),
+            thumbnail: String::new(),
+        };
+        let playing = Status {
+            state: "playing".into(),
+            media: Some(media.clone()),
+            ..Status::default()
+        };
+        let stopped = Status {
+            state: "stopped".into(),
+            media: Some(media),
+            ..Status::default()
+        };
+
+        assert!(is_track_active(&playing, "a.mp3"));
+        assert!(!is_track_active(&playing, "b.mp3"));
+        assert!(!is_track_active(&stopped, "a.mp3"));
+        assert!(should_toggle_loaded_media(&playing));
+        assert!(!should_toggle_loaded_media(&stopped));
+        assert!(!should_toggle_loaded_media(&Status::default()));
     }
 }

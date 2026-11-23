@@ -1,7 +1,7 @@
 //! Reactive UI state and action methods for the Dotara frontend.
 
 use crate::api;
-use crate::formatting::resolve_selected_paths;
+use crate::formatting::{resolve_selected_paths, should_toggle_loaded_media};
 use crate::models::{LibraryResponse, MediaInfo, Status, MAX_VOLUME, MIN_VOLUME, SEEK_SETTLE_MS};
 use crate::shortcuts::{compute_seek_target, compute_volume_target};
 use leptos::prelude::*;
@@ -94,8 +94,7 @@ impl AppController {
         let next_sel = self
             .selected_path
             .get_untracked()
-            .filter(|sel| valid.contains(sel))
-            .or_else(|| lib.items.first().map(|i| i.path.clone()));
+            .filter(|sel| valid.contains(sel));
         self.set_selected_path.set(next_sel);
         self.set_library.set(lib);
     }
@@ -120,24 +119,35 @@ impl AppController {
         });
     }
 
-    /// Play the highlighted row if it differs from the loaded track; otherwise toggle pause.
+    /// Toggle pause/resume for the active track; only start a selected row when nothing is active.
     pub fn play_or_toggle(self) {
-        let loaded = self
-            .status
-            .with_untracked(|s| s.media.as_ref().map(|m| m.path.clone()));
-        if let Some(sel) = self.selected_path.get_untracked() {
-            if loaded.as_deref() != Some(sel.as_str()) {
-                self.play_item(sel);
-                return;
-            }
+        let should_toggle = self.status.with_untracked(should_toggle_loaded_media);
+        if should_toggle {
+            self.clear_selection();
+            spawn_local(async move {
+                self.finish_unit(api::toggle_pause().await);
+            });
+            return;
         }
-        spawn_local(async move {
-            self.finish_unit(api::toggle_pause().await);
-        });
+
+        let selected = self.selected_path.get_untracked();
+        let selection = self.current_selection();
+        self.clear_selection();
+        if let Some(path) = selected {
+            spawn_local(async move {
+                let res = api::play_track(path, Some(selection)).await.map(|_| ());
+                self.finish_unit(res);
+            });
+        } else {
+            spawn_local(async move {
+                self.finish_unit(api::toggle_pause().await);
+            });
+        }
     }
 
     /// Start playing all items inside the active library folder.
     pub fn play_all(self) {
+        self.clear_selection();
         spawn_local(async move {
             self.finish_media_opt(api::play_all_in_folder().await);
         });
@@ -149,6 +159,7 @@ impl AppController {
         if paths.is_empty() {
             return;
         }
+        self.clear_selection();
         spawn_local(async move {
             self.finish_media_opt(api::play_selected_tracks(paths).await);
         });
@@ -156,6 +167,7 @@ impl AppController {
 
     /// Step backward (`is_forward = false`) or forward (`is_forward = true`) in the queue.
     pub fn step_track(self, is_forward: bool) {
+        self.clear_selection();
         spawn_local(async move {
             let res = if is_forward {
                 api::next_track().await
@@ -168,6 +180,7 @@ impl AppController {
 
     /// Open a native single-file picker and play the chosen media file.
     pub fn open_file(self) {
+        self.clear_selection();
         spawn_local(async move {
             self.finish_media_opt(api::open_media_file().await);
         });
@@ -175,6 +188,7 @@ impl AppController {
 
     /// Stop playback completely.
     pub fn stop(self) {
+        self.clear_selection();
         spawn_local(async move {
             self.finish_unit(api::stop_playback().await);
         });
@@ -291,8 +305,14 @@ impl AppController {
         });
     }
 
+    /// Clear row selection focus in the library list.
+    pub fn clear_selection(self) {
+        self.set_selected_path.set(None);
+    }
+
     /// Toggle the docked library sidebar open or closed.
     pub fn toggle_menu(self) {
+        self.clear_selection();
         self.set_is_menu_open.update(|open| *open = !*open);
     }
 
@@ -316,11 +336,7 @@ impl AppController {
 
     fn finish_media_opt(self, result: Result<Option<MediaInfo>, String>) {
         match result {
-            Ok(Some(info)) => {
-                self.set_selected_path.set(Some(info.path));
-                self.set_error.set(None);
-            }
-            Ok(None) => {}
+            Ok(_) => self.set_error.set(None),
             Err(err) => self.set_error.set(Some(err)),
         }
         self.refresh_status();

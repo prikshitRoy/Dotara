@@ -1,5 +1,6 @@
 //! Scrollable media list and individual track row with thumbnails and multi-select checkboxes.
 
+use crate::formatting::is_track_active;
 use crate::models::{LibraryItem, LibraryResponse, Status, ALL_LIBRARIES_KEY};
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -85,6 +86,7 @@ fn MediaRow(
     let path_checked = item.path.clone();
     let path_click = item.path.clone();
     let path_dbl = item.path.clone();
+    let path_enter = item.path.clone();
     let path_toggle = item.path.clone();
     let path_play_btn = item.path.clone();
 
@@ -95,14 +97,19 @@ fn MediaRow(
     view! {
         <div
             class="media-item"
+            tabindex="0"
             class:selected=move || {
                 selected_path.with(|s| s.as_deref() == Some(path_selected.as_str()))
             }
-            class:playing=move || {
-                status.with(|s| s.media.as_ref().map(|m| m.path.as_str()) == Some(path_playing.as_str()))
-            }
+            class:playing=move || status.with(|s| is_track_active(s, &path_playing))
             on:click=move |_| on_select.run(path_click.clone())
             on:dblclick=move |_| on_play_item.run(path_dbl.clone())
+            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                if ev.key() == "Enter" {
+                    ev.prevent_default();
+                    on_play_item.run(path_enter.clone());
+                }
+            }
         >
             <input
                 type="checkbox"

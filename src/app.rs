@@ -79,8 +79,14 @@ pub fn App() -> impl IntoView {
                 on_play_or_toggle=Callback::new(move |()| ctrl.play_or_toggle())
                 on_next=Callback::new(move |()| ctrl.step_track(true))
                 on_stop=Callback::new(move |()| ctrl.stop())
-                on_seek=Callback::new(move |ms| ctrl.seek(ms))
-                on_volume=Callback::new(move |v| ctrl.set_volume(v))
+                on_seek=Callback::new(move |ms| {
+                    ctrl.clear_selection();
+                    ctrl.seek(ms);
+                })
+                on_volume=Callback::new(move |v| {
+                    ctrl.clear_selection();
+                    ctrl.set_volume(v);
+                })
             />
         </div>
     }
