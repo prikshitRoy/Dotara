@@ -1,4 +1,11 @@
+//! Dotara WebAssembly UI entry point.
+
+mod api;
 mod app;
+mod components;
+mod controller;
+mod formatting;
+mod models;
 mod tauri;
 
 fn main() {
