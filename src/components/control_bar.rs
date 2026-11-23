@@ -88,11 +88,12 @@ pub fn ControlBar(
                 </button>
                 <div class="controls-spacer"></div>
                 <div class="volume">
-                    <span>"Vol"</span>
                     <input
                         type="range"
                         min="0"
                         max="100"
+                        aria-label="Volume"
+                        title=move || format!("Volume: {}%", status.with(|s| s.volume))
                         prop:value=move || status.with(|s| s.volume).to_string()
                         on:input=move |ev| {
                             let vol = event_target_value(&ev).parse().unwrap_or(DEFAULT_VOLUME);

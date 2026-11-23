@@ -2,8 +2,8 @@
 
 use crate::api;
 use crate::formatting::resolve_selected_paths;
-use crate::models::{LibraryResponse, MediaInfo, Status, SEEK_SETTLE_MS};
-use crate::shortcuts::compute_seek_target;
+use crate::models::{LibraryResponse, MediaInfo, Status, MAX_VOLUME, MIN_VOLUME, SEEK_SETTLE_MS};
+use crate::shortcuts::{compute_seek_target, compute_volume_target};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::collections::HashSet;
@@ -26,6 +26,8 @@ pub struct AppController {
     set_checked_paths: WriteSignal<HashSet<String>>,
     /// Counts in-flight seeks so stale status polls cannot snap `time_ms` backward.
     pending_seeks: StoredValue<u32>,
+    /// Counts in-flight volume updates so rapid Up/Down key presses stay smooth.
+    pending_volume_updates: StoredValue<u32>,
 }
 
 impl AppController {
@@ -52,6 +54,7 @@ impl AppController {
             checked_paths,
             set_checked_paths,
             pending_seeks: StoredValue::new(0),
+            pending_volume_updates: StoredValue::new(0),
         }
     }
 
@@ -62,6 +65,9 @@ impl AppController {
                 Ok(mut next) => {
                     if self.pending_seeks.get_value() > 0 {
                         next.time_ms = self.status.with_untracked(|s| s.time_ms);
+                    }
+                    if self.pending_volume_updates.get_value() > 0 {
+                        next.volume = self.status.with_untracked(|s| s.volume);
                     }
                     self.set_status.set(next);
                 }
@@ -203,10 +209,23 @@ impl AppController {
 
     /// Update audio volume optimistically and send it to the backend.
     pub fn set_volume(self, volume: i32) {
-        self.set_status.update(|s| s.volume = volume);
+        let clamped = volume.clamp(MIN_VOLUME, MAX_VOLUME);
+        self.pending_volume_updates.update_value(|count| *count += 1);
+        self.set_status.update(|s| s.volume = clamped);
         spawn_local(async move {
-            let _ = api::set_volume(volume).await;
+            if let Err(err) = api::set_volume(clamped).await {
+                self.set_error.set(Some(err));
+            }
+            self.pending_volume_updates
+                .update_value(|count| *count = count.saturating_sub(1));
         });
+    }
+
+    /// Change audio volume by `delta` relative to the current volume (`0..=100`).
+    pub fn adjust_volume(self, delta: i32) {
+        let current = self.status.with_untracked(|s| s.volume);
+        let target = compute_volume_target(current, delta);
+        self.set_volume(target);
     }
 
     /// Change the active playback mode.

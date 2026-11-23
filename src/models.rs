@@ -11,8 +11,12 @@ pub const MODE_PLAY_ALL: &str = "play_all";
 pub const MODE_SELECTED: &str = "selected";
 pub const MODE_ONE: &str = "one";
 
-/// Default audio volume (`0..=100`) before the first status response arrives.
+/// Volume bounds and default level (`0..=100`).
+pub const MIN_VOLUME: i32 = 0;
+pub const MAX_VOLUME: i32 = 100;
 pub const DEFAULT_VOLUME: i32 = 80;
+/// Volume change per Up/Down arrow key press.
+pub const VOLUME_STEP: i32 = 5;
 /// Interval in milliseconds between backend `status` polls.
 pub const POLL_INTERVAL_MS: u64 = 250;
 /// Short delay after toggling the sidebar so layout reflow finishes before measuring `.video-area`.
