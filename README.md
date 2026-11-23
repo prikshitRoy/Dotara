@@ -64,20 +64,40 @@ flowchart LR
 
 ```
 .
-├── index.html, styles.css, Trunk.toml   # Trunk entry point & styling
+├── index.html, Trunk.toml               # Trunk entry point
+├── styles/                              # Feature-scoped CSS (base, sidebar, media-list, player)
 ├── scripts/prepare-vlc.ps1              # Stages bundled VLC runtime into src-tauri/vlc
-├── src/                                 # Leptos UI crate (dotara-ui)
-│   ├── main.rs
-│   ├── app.rs
-│   └── tauri.rs
+├── src/                                 # Leptos UI crate (dotara-ui, compiled to WASM)
+│   ├── main.rs                          # WASM entry point
+│   ├── app.rs                           # Root component & video-bounds sync
+│   ├── controller.rs                    # Reactive signals and async UI actions
+│   ├── api.rs                           # Typed Tauri IPC client
+│   ├── models.rs                        # Shared UI structs, constants, and IPC payloads
+│   ├── formatting.rs                    # Pure duration, label, and selection helpers (+ unit tests)
+│   ├── tauri.rs                         # Low-level `window.__TAURI__.core.invoke` wrapper
+│   └── components/                      # LibraryHeader, MediaList, VideoStage, ControlBar
 └── src-tauri/                           # Tauri backend crate (dotara)
     ├── src/
-    │   ├── main.rs                      # app setup + commands
-    │   ├── library.rs                   # folder scanner + audio/video thumbnails
-    │   ├── vlc.rs                       # libVLC binding
-    │   └── surface.rs                   # Win32 video surface
-    ├── examples/vlc_smoke.rs            # headless libVLC test
+    │   ├── main.rs                      # Thin binary entry point
+    │   ├── lib.rs                       # App bootstrap and command registration
+    │   ├── state.rs                     # Shared AppState & status/queue sync
+    │   ├── surface.rs                   # Win32 child window for libVLC video output
+    │   ├── vlc/                         # Runtime libVLC FFI loader (api.rs) & safe Player (player.rs)
+    │   ├── playback/                    # Pure PlayMode & PlaybackQueue logic (+ unit tests)
+    │   ├── library/                     # Folder models, config, scanner, and thumbnails/ (+ unit tests)
+    │   └── commands/                    # Tauri IPC handlers (library.rs, playback.rs, window.rs)
+    ├── examples/vlc_smoke.rs            # Headless library & libVLC check
     ├── capabilities/default.json
     ├── icons/
     └── tauri.conf.json
+```
+
+## Testing
+
+```powershell
+# Run all backend and frontend pure-logic unit tests
+cargo test --workspace
+
+# Run the headless library + libVLC smoke test
+cargo run -p dotara --example vlc_smoke
 ```

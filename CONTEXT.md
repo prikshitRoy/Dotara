@@ -25,9 +25,13 @@
 | Persistence | `%LOCALAPPDATA%\Dotara\libraries.json` (`folders[]`, `activeFolder`); migrates legacy `library_folder.txt`; defaults to `E:\Songs` | Multiple libraries survive restarts |
 
 ### Key files
-- `src/app.rs` — entire Leptos UI (side menu, library chips, list, controls). `src/tauri.rs` — typed `invoke` wrapper.
-- `src-tauri/src/main.rs` — AppState, all `#[tauri::command]`s, play-mode/queue logic, auto-advance inside `status`.
-- `src-tauri/src/library.rs` — scanning, persistence, thumbnails. `vlc.rs` — libVLC FFI. `surface.rs` — Win32 child window.
+- `src/app.rs` — root Leptos shell & video-bounds sync. `src/controller.rs` — reactive signals & UI actions. `src/api.rs` — typed Tauri IPC client. `src/models.rs` — UI structs/constants. `src/formatting.rs` — pure formatting/selection helpers (+ unit tests). `src/components/` — `LibraryHeader`, `MediaList`, `VideoStage`, `ControlBar`. `styles/` — `base.css`, `sidebar.css`, `media-list.css`, `player.css`.
+- `src-tauri/src/lib.rs` & `main.rs` — Tauri bootstrap and handler wiring.
+- `src-tauri/src/state.rs` — shared `AppState`, track loading, and end-of-track auto-advance.
+- `src-tauri/src/commands/` — Tauri IPC handlers (`library.rs`, `playback.rs`, `window.rs`).
+- `src-tauri/src/playback/` — pure `PlayMode` (`mode.rs`) and `PlaybackQueue` (`queue.rs`) (+ unit tests).
+- `src-tauri/src/library/` — `models.rs`, `config.rs`, `scanner.rs`, and `thumbnails/` (`mod.rs`, `sidecar.rs`, `embedded.rs`, `win_shell.rs`) (+ unit tests).
+- `src-tauri/src/vlc/` — runtime FFI loader (`api.rs`) and safe `Player` (`player.rs`). `src-tauri/src/surface.rs` — Win32 child window.
 - `src-tauri/examples/vlc_smoke.rs` — headless test: scans library + plays first file.
 - `scripts/prepare-vlc.ps1` — VLC staging (runs in `beforeBuild/DevCommand`).
 
