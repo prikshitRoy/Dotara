@@ -1,20 +1,19 @@
 //! Headless smoke test for the libVLC binding and library scanner:
 //! `cargo run -p dotara --example vlc_smoke`
-#![allow(dead_code)]
 
-#[path = "../src/library.rs"]
-mod library;
-#[path = "../src/vlc.rs"]
-mod vlc;
-
+use dotara::{library, vlc};
 use std::{path::Path, thread::sleep, time::Duration};
+
+const FALLBACK_FOLDER: &str = r"E:\Songs";
+const SAMPLE_PLAYBACK_SECS: u64 = 2;
 
 fn main() {
     let (folders, _) = library::initial_libraries();
     let folder = folders
         .into_iter()
         .next()
-        .unwrap_or_else(|| Path::new(r"E:\Songs").to_path_buf());
+        .unwrap_or_else(|| Path::new(FALLBACK_FOLDER).to_path_buf());
+
     println!("Scanning folder: {}", folder.display());
     let items = library::scan_folder(&folder);
     println!("Found {} media items:", items.len());
@@ -36,7 +35,7 @@ fn main() {
         let player = vlc::Player::new().expect("VLC init");
         player.load(Path::new(&path)).expect("load");
         player.play().expect("play");
-        sleep(Duration::from_secs(2));
+        sleep(Duration::from_secs(SAMPLE_PLAYBACK_SECS));
         println!(
             "Playback check ({}): state={:?} time={}ms length={}ms vout={}",
             path,
