@@ -6,6 +6,7 @@ mod components;
 mod controller;
 mod formatting;
 mod models;
+mod shortcuts;
 mod tauri;
 
 fn main() {

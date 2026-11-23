@@ -17,6 +17,10 @@ pub const DEFAULT_VOLUME: i32 = 80;
 pub const POLL_INTERVAL_MS: u64 = 250;
 /// Short delay after toggling the sidebar so layout reflow finishes before measuring `.video-area`.
 pub const BOUNDS_SETTLE_DELAY_MS: u64 = 30;
+/// Seek jump distance (in milliseconds) for Left/Right arrow keyboard shortcuts.
+pub const SEEK_STEP_MS: i64 = 5_000;
+/// Hold optimistic seek time while libVLC's async decoder thread completes the seek.
+pub const SEEK_SETTLE_MS: u64 = 350;
 
 /// Metadata for the currently loaded media file.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]

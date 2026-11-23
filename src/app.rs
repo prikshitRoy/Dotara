@@ -5,6 +5,7 @@ use crate::components::{ControlBar, LibraryHeader, MediaList, VideoStage};
 use crate::controller::AppController;
 use crate::formatting::placeholder_for;
 use crate::models::{BoundsArgs, BOUNDS_SETTLE_DELAY_MS, POLL_INTERVAL_MS};
+use crate::shortcuts::bind_keyboard_shortcuts;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -24,6 +25,7 @@ pub fn App() -> impl IntoView {
     }
 
     sync_video_bounds(video_ref, ctrl.is_menu_open);
+    bind_keyboard_shortcuts(ctrl);
     ctrl.load_initial_library();
 
     let placeholder = Memo::new(move |_| ctrl.status.with(placeholder_for));

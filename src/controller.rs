@@ -2,10 +2,12 @@
 
 use crate::api;
 use crate::formatting::resolve_selected_paths;
-use crate::models::{LibraryResponse, MediaInfo, Status};
+use crate::models::{LibraryResponse, MediaInfo, Status, SEEK_SETTLE_MS};
+use crate::shortcuts::compute_seek_target;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::collections::HashSet;
+use std::time::Duration;
 
 /// Holds the root reactive signals and provides typed async actions for UI components.
 #[derive(Clone, Copy)]
@@ -22,6 +24,8 @@ pub struct AppController {
     set_selected_path: WriteSignal<Option<String>>,
     pub checked_paths: ReadSignal<HashSet<String>>,
     set_checked_paths: WriteSignal<HashSet<String>>,
+    /// Counts in-flight seeks so stale status polls cannot snap `time_ms` backward.
+    pending_seeks: StoredValue<u32>,
 }
 
 impl AppController {
@@ -47,6 +51,7 @@ impl AppController {
             set_selected_path,
             checked_paths,
             set_checked_paths,
+            pending_seeks: StoredValue::new(0),
         }
     }
 
@@ -54,7 +59,12 @@ impl AppController {
     pub fn refresh_status(self) {
         spawn_local(async move {
             match api::fetch_status().await {
-                Ok(s) => self.set_status.set(s),
+                Ok(mut next) => {
+                    if self.pending_seeks.get_value() > 0 {
+                        next.time_ms = self.status.with_untracked(|s| s.time_ms);
+                    }
+                    self.set_status.set(next);
+                }
                 Err(err) => self.set_error.set(Some(err)),
             }
         });
@@ -164,12 +174,31 @@ impl AppController {
         });
     }
 
-    /// Seek to `ms` milliseconds from the start of the track.
+    /// Seek to `ms` milliseconds from the start of the track with optimistic UI feedback.
     pub fn seek(self, ms: i64) {
+        let clamped = ms.max(0);
+        self.pending_seeks.update_value(|count| *count += 1);
+        self.set_status.update(|s| s.time_ms = clamped);
         spawn_local(async move {
-            let _ = api::seek_to(ms).await;
-            self.refresh_status();
+            if let Err(err) = api::seek_to(clamped).await {
+                self.set_error.set(Some(err));
+            }
+            set_timeout(
+                move || {
+                    self.pending_seeks
+                        .update_value(|count| *count = count.saturating_sub(1));
+                },
+                Duration::from_millis(SEEK_SETTLE_MS),
+            );
         });
+    }
+
+    /// Jump forward or backward by `delta_ms` milliseconds relative to the current position.
+    pub fn seek_by(self, delta_ms: i64) {
+        let (current_ms, length_ms) = self.status.with_untracked(|s| (s.time_ms, s.length_ms));
+        if let Some(target_ms) = compute_seek_target(current_ms, length_ms, delta_ms) {
+            self.seek(target_ms);
+        }
     }
 
     /// Update audio volume optimistically and send it to the backend.
