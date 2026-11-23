@@ -46,6 +46,13 @@ pub struct InnerState {
     /// Target volume applied once VLC opens an audio output.
     pub volume: i32,
     pub is_surface_visible: bool,
+    /// Last title pushed to the native window so we only call `set_title` on changes.
+    pub last_window_title: String,
+}
+
+/// Compute the native window title (empty when idle so only the app logo appears).
+pub fn window_title_for_media(media: Option<&MediaInfo>) -> &str {
+    media.map(|m| m.name.as_str()).unwrap_or("")
 }
 
 /// Root state managed by Tauri and shared across all IPC commands.
@@ -79,6 +86,7 @@ impl AppState {
                 queue: PlaybackQueue::new(initial_paths),
                 volume: DEFAULT_VOLUME,
                 is_surface_visible: false,
+                last_window_title: String::new(),
             }),
         }
     }
@@ -174,5 +182,27 @@ impl AppState {
             return player.state();
         }
         current_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returns_empty_title_when_no_media_is_loaded() {
+        assert_eq!(window_title_for_media(None), "");
+    }
+
+    #[test]
+    fn returns_media_name_when_media_is_loaded() {
+        let info = MediaInfo {
+            path: r"E:\Songs\Track.mp3".into(),
+            name: "Track".into(),
+            kind: "audio",
+            thumbnail: String::new(),
+        };
+
+        assert_eq!(window_title_for_media(Some(&info)), "Track");
     }
 }

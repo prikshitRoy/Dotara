@@ -86,11 +86,7 @@ pub fn ControlBar(
                 >
                     "⏹ Stop"
                 </button>
-                <div class="title">
-                    {move || {
-                        status.with(|s| s.media.as_ref().map(|m| m.name.clone()).unwrap_or_default())
-                    }}
-                </div>
+                <div class="controls-spacer"></div>
                 <div class="volume">
                     <span>"Vol"</span>
                     <input

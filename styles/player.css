@@ -66,14 +66,8 @@
   gap: 8px;
 }
 
-.title {
+.controls-spacer {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-  color: var(--muted);
-  padding: 0 6px;
 }
 
 .volume {

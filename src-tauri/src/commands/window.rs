@@ -1,7 +1,7 @@
 //! Tauri commands for synchronizing the native video surface and polling player status.
 
-use crate::state::{AppState, Status};
-use tauri::State;
+use crate::state::{window_title_for_media, AppState, Status};
+use tauri::{State, WebviewWindow};
 
 /// Move and resize the native video child window to match `.video-area` (in physical pixels).
 #[tauri::command]
@@ -23,14 +23,25 @@ pub async fn set_video_bounds(
     Ok(())
 }
 
-/// Poll player state, advance the queue on track end, and keep video surface & volume in sync.
+/// Poll player state, advance the queue on track end, and keep window title, surface, & volume in sync.
 #[tauri::command]
-pub async fn status(state: State<'_, AppState>) -> Result<Status, String> {
+pub async fn status(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Status, String> {
     let player = state.player()?;
     let current_state = state.advance_if_ended(player, player.state());
     let has_video = player.has_video();
 
     let mut inner = state.lock_inner();
+
+    // Show the active media name in the top window title bar (empty when idle so only the logo shows).
+    let desired_title = window_title_for_media(inner.media.as_ref());
+    if inner.last_window_title != desired_title {
+        if window.set_title(desired_title).is_ok() {
+            inner.last_window_title = desired_title.to_string();
+        }
+    }
 
     // Show the native child window only while VLC has an active video output so audio art shows otherwise.
     if let Some(surface) = state.surface() {
