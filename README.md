@@ -13,7 +13,10 @@ A desktop media player built on the **VLC engine (libVLC)** and **Tauri 2**, wit
     - **`▶ Play All`** button to play all songs inside the active folder from the beginning, and **`▶ Play Selected`** button (plus per-item checkboxes for multi-selection)
     - Playback mode selector with 4 options (**`Continue play next song in the list`** as the default, **`Play all`**, **`Selected`**, and **`Play only one song`**)
     - **`⏮` Previous** and **`⏭` Next** track buttons in the bottom control bar, plus automatic track advancement when a song finishes
-- Play / pause, stop, seek bar with elapsed / total time, and volume control
+  - Focusable track rows (`tabindex="0"`, Enter to play) with border-only selection focus and accent-colored text on the currently playing track (no background change); pressing any bottom transport control controls only the playing media and clears row focus
+- Play / pause, stop, seek bar with elapsed / total time, and compact volume slider (hover for percentage)
+- **Keyboard shortcuts:** `←` / `→` seek backward/forward by 5 seconds; `↑` / `↓` increase/decrease volume by 5%
+- **Top window title bar:** shows only the app logo when idle and displays the active media name while playing
 - Native single-file picker (**Open File…**)
 - Video rendered by libVLC directly into a Win32 child surface inside the app window (automatically resizes when the side menu opens or closes)
 - Audio tracks display their cover art thumbnail and title in the main player view
@@ -43,18 +46,20 @@ cargo tauri build
 
 ```mermaid
 flowchart LR
-    UI["Leptos UI (WASM)<br/>src/app.rs"] -- "invoke(cmd)" --> CMD["Tauri commands<br/>src-tauri/src/main.rs"]
-    CMD --> LIB["Library & Thumbnails<br/>src-tauri/src/library.rs"]
-    CMD --> VLC["libVLC binding<br/>src-tauri/src/vlc.rs"]
+    UI["Leptos UI (WASM)<br/>src/app.rs"] -- "invoke(cmd)" --> CMD["Tauri commands<br/>src-tauri/src/commands/"]
+    CMD --> LIB["Library & Thumbnails<br/>src-tauri/src/library/"]
+    CMD --> PB["Playback Queue & Modes<br/>src-tauri/src/playback/"]
+    CMD --> VLC["libVLC binding<br/>src-tauri/src/vlc/"]
     CMD --> SURF["Native video surface<br/>src-tauri/src/surface.rs"]
     VLC -- "renders into HWND" --> SURF
     UI -- "video-area bounds" --> CMD
 ```
 
-- **Library & thumbnails** — `library.rs` scans the selected media folder (`E:\Songs` by default) and extracts thumbnails for both video and audio files using Windows Shell (`IShellItemImageFactory`), sidecar images, and embedded tag artwork.
-- **libVLC binding** — `vlc.rs` resolves `libvlc_*` functions from the bundled `vlc/libvlc.dll` via `libloading` and wraps them in a safe `Player` type.
+- **Library & thumbnails** — `library/` scans configured media folders (`E:\Songs` by default), persists `libraries.json`, and extracts thumbnails for video and audio files via Windows Shell (`IShellItemImageFactory`), sidecar images, and embedded tag artwork.
+- **Playback queue & modes** — `playback/` holds pure, unit-tested `PlayMode` and `PlaybackQueue` logic separated from VLC side effects.
+- **libVLC binding** — `vlc/` resolves `libvlc_*` functions from the bundled `vlc/libvlc.dll` via `libloading` and wraps them in a safe `Player` type.
 - **Video surface** — `surface.rs` creates a borderless Win32 child window inside the Tauri window. Whenever the window resizes or the side menu opens/closes, the UI reports `.video-area` bounds and the native video surface resizes alongside it.
-- **Commands** — `get_library`, `pick_folder`, `play_file`, `open_file`, `play`, `pause`, `toggle_pause`, `stop`, `seek`, `set_volume`, `set_video_bounds`, `status`.
+- **Commands** — `get_library`, `add_folder`, `select_folder`, `remove_folder`, `set_play_mode`, `play_all`, `play_selected`, `play_file`, `next_track`, `prev_track`, `open_file`, `play`, `pause`, `toggle_pause`, `stop`, `seek`, `set_volume`, `set_video_bounds`, `status`.
 
 ### Self-contained VLC bundle
 
@@ -73,7 +78,8 @@ flowchart LR
 │   ├── controller.rs                    # Reactive signals and async UI actions
 │   ├── api.rs                           # Typed Tauri IPC client
 │   ├── models.rs                        # Shared UI structs, constants, and IPC payloads
-│   ├── formatting.rs                    # Pure duration, label, and selection helpers (+ unit tests)
+│   ├── formatting.rs                    # Pure duration, label, active-track, and selection helpers (+ unit tests)
+│   ├── shortcuts.rs                     # Global keyboard shortcuts: Left/Right seek, Up/Down volume (+ unit tests)
 │   ├── tauri.rs                         # Low-level `window.__TAURI__.core.invoke` wrapper
 │   └── components/                      # LibraryHeader, MediaList, VideoStage, ControlBar
 └── src-tauri/                           # Tauri backend crate (dotara)
