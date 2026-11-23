@@ -12,3 +12,25 @@
 *.mp3
 *.flac
 *.wav
+
+# OS, editor, logs, and local env
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log
+.env
+.env.*
+!.env.example
+tmp/
+.cache/
+
+# Secrets and signing keys
+*.pem
+*.key
+*.p12
+*.keystore
+*.jks
+credentials.json
+serviceAccount*.json
